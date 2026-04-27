@@ -1,0 +1,86 @@
+{
+  "pending": {},
+  "approved": {
+    "5394280567": {
+      "tg_user_id": 5394280567,
+      "tg_username": "spisoq",
+      "tg_full_name": "Pawa Dura",
+      "fio": "4t4t4t4",
+      "role": "-",
+      "group": "-",
+      "faculty": "-",
+      "specialty": "-",
+      "course": "-",
+      "phone": "+77004287470",
+      "documents": {
+        "diploma": {
+          "kind": "photo",
+          "file_id": "AgACAgIAAxkBAAICB2nvdtnjYNB5QPwYLkaqEiBJNhT5AAKVFWsbNoR5S-3IVjlCqZNiAQADAgADeAADOwQ",
+          "local_path": "data/files/5394280567/attestat_diplom.jpg"
+        },
+        "id_card": {
+          "kind": "photo",
+          "file_id": "AgACAgIAAxkBAAICB2nvdtnjYNB5QPwYLkaqEiBJNhT5AAKVFWsbNoR5S-3IVjlCqZNiAQADAgADeAADOwQ",
+          "local_path": "data/files/5394280567/udostoverenie.jpg"
+        },
+        "photo_3x4": {
+          "kind": "photo",
+          "file_id": "AgACAgIAAxkBAAICB2nvdtnjYNB5QPwYLkaqEiBJNhT5AAKVFWsbNoR5S-3IVjlCqZNiAQADAgADeAADOwQ",
+          "local_path": "data/files/5394280567/photo_3x4.jpg"
+        },
+        "medical_075": {
+          "kind": "photo",
+          "file_id": "AgACAgIAAxkBAAICB2nvdtnjYNB5QPwYLkaqEiBJNhT5AAKVFWsbNoR5S-3IVjlCqZNiAQADAgADeAADOwQ",
+          "local_path": "data/files/5394280567/med_075u.jpg"
+        },
+        "ent_certificate": {
+          "kind": "photo",
+          "file_id": "AgACAgIAAxkBAAICB2nvdtnjYNB5QPwYLkaqEiBJNhT5AAKVFWsbNoR5S-3IVjlCqZNiAQADAgADeAADOwQ",
+          "local_path": "data/files/5394280567/ent_certificate.jpg"
+        }
+      },
+      "consent_personal_data": true,
+      "created_at": "2026-04-27T16:55:31.763813+00:00",
+      "review_status": "approved",
+      "reviewer_id": 5394280567,
+      "reviewer_username": "spisoq"
+    },
+    "7939104831": {
+      "tg_user_id": 7939104831,
+      "tg_username": "kotakbaser",
+      "tg_full_name": "Отец Демидов'мур",
+      "fio": "алалла",
+      "role": "-",
+      "group": "-",
+      "faculty": "-",
+      "specialty": "-",
+      "course": "-",
+      "phone": "+77382873728",
+      "documents": {
+        "diploma": {
+          "kind": "photo",
+          "file_id": "AgACAgQAAxkBAAIE7GnrUb_a-6Wp9etMHyL8ZQS54dk-AALwC2sbXwNZU5dexFTzM8eSAQADAgADeAADOwQ"
+        },
+        "id_card": {
+          "kind": "photo",
+          "file_id": "AgACAgQAAxkBAAIE7GnrUb_a-6Wp9etMHyL8ZQS54dk-AALwC2sbXwNZU5dexFTzM8eSAQADAgADeAADOwQ"
+        },
+        "photo_3x4": {
+          "kind": "photo",
+          "file_id": "AgACAgQAAxkBAAIE7GnrUb_a-6Wp9etMHyL8ZQS54dk-AALwC2sbXwNZU5dexFTzM8eSAQADAgADeAADOwQ"
+        },
+        "medical_075": {
+          "kind": "photo",
+          "file_id": "AgACAgQAAxkBAAIE7GnrUb_a-6Wp9etMHyL8ZQS54dk-AALwC2sbXwNZU5dexFTzM8eSAQADAgADeAADOwQ"
+        },
+        "ent_certificate": {
+          "kind": "photo",
+          "file_id": "AgACAgQAAxkBAAIE7GnrUb_a-6Wp9etMHyL8ZQS54dk-AALwC2sbXwNZU5dexFTzM8eSAQADAgADeAADOwQ"
+        }
+      },
+      "review_status": "approved",
+      "reviewer_id": 5394280567
+    }
+  },
+  "denied": {}
+}

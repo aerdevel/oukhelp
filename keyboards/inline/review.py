@@ -1,0 +1,208 @@
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+from core.callbacks import CallbackData
+from services.access_control import get_user_permissions
+from services.registration_store import get_approved_user
+
+
+def get_admin_approve_kb(user_phone: str) -> InlineKeyboardMarkup:
+    """Клавиатура модерации регистрационных заявок."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="✅ Одобрить", callback_data=f"reg_approve_{user_phone}"),
+        InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reg_deny_{user_phone}")
+    )
+    return builder.as_markup()
+
+
+def _compact_label(item: dict) -> str:
+    fio = str(item.get("fio", "-")).strip()
+    if len(fio) > 22:
+        fio = f"{fio[:22]}..."
+    status = "🟡" if item.get("status") in {None, "pending"} else "🟢" if item.get("status") == "approved" else "🔴"
+    group = str(item.get("group", "-")).strip() or "-"
+    if len(group) > 10:
+        group = f"{group[:10]}..."
+    return f"{status} {fio} | {group}"
+
+
+def get_review_list_kb(items: list[dict], page: int, total_pages: int, *, processed: bool = False) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for item in items:
+        tg_user_id = item.get("tg_user_id", 0)
+        prefix = CallbackData.REVIEW_DONE_OPEN_PREFIX if processed else CallbackData.REVIEW_OPEN_PREFIX
+        builder.row(
+            InlineKeyboardButton(
+                text=_compact_label(item),
+                callback_data=f"{prefix}{tg_user_id}",
+            )
+        )
+
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(
+            InlineKeyboardButton(
+                text="⬅️",
+                callback_data=f"{CallbackData.REVIEW_PAGE_PREFIX}{int(processed)}_{page - 1}",
+            )
+        )
+    nav_buttons.append(InlineKeyboardButton(text=f"{page + 1}/{max(total_pages, 1)}", callback_data="noop"))
+    if page < total_pages - 1:
+        nav_buttons.append(
+            InlineKeyboardButton(
+                text="➡️",
+                callback_data=f"{CallbackData.REVIEW_PAGE_PREFIX}{int(processed)}_{page + 1}",
+            )
+        )
+    builder.row(*nav_buttons)
+    builder.row(
+        InlineKeyboardButton(text="⏳ Необработанные", callback_data=f"{CallbackData.REVIEW_TAB_PREFIX}0"),
+        InlineKeyboardButton(text="✅ Обработанные", callback_data=f"{CallbackData.REVIEW_TAB_PREFIX}1"),
+    )
+    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data=CallbackData.LEVEL_UNI))
+    return builder.as_markup()
+
+
+def get_review_actions_kb(tg_user_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="✅ Одобрить", callback_data=f"{CallbackData.REVIEW_ACTION_PREFIX}approve_{tg_user_id}"),
+        InlineKeyboardButton(text="❌ Отклонить", callback_data=f"{CallbackData.REVIEW_ACTION_PREFIX}deny_{tg_user_id}"),
+    )
+    builder.row(InlineKeyboardButton(text="🔙 К списку", callback_data=f"{CallbackData.REVIEW_PAGE_PREFIX}0_0"))
+    return builder.as_markup()
+
+
+def get_admin_users_kb(items: list[tuple[int, str]]) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for user_id, display_name in items:
+        profile = get_user_permissions(user_id)
+        approved = get_approved_user(user_id) or {}
+        fio = approved.get("fio") or display_name or f"ID {user_id}"
+        role = approved.get("role", "-")
+        group = approved.get("group", "-")
+        flags = []
+        if profile.get("can_notify"):
+            flags.append("🔔")
+        if profile.get("can_review"):
+            flags.append("✅")
+        if profile.get("is_admin"):
+            flags.append("👑")
+        suffix = f" {' '.join(flags)}" if flags else ""
+        builder.row(
+            InlineKeyboardButton(
+                text=f"{fio} | {role} | {group}{suffix}",
+                callback_data=f"{CallbackData.ADMIN_USER_PREFIX}{user_id}",
+            )
+        )
+    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data=CallbackData.LEVEL_UNI))
+    return builder.as_markup()
+
+
+def get_admin_user_actions_kb(user_id: int, profile: dict) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    notify_mark = "✅" if profile.get("can_notify") else "❌"
+    review_mark = "✅" if profile.get("can_review") else "❌"
+    admin_mark = "✅" if profile.get("is_admin") else "❌"
+    builder.row(InlineKeyboardButton(text=f"{notify_mark} Уведомления", callback_data=f"{CallbackData.ADMIN_TOGGLE_NOTIFY_PREFIX}{user_id}"))
+    builder.row(InlineKeyboardButton(text=f"{review_mark} Модерация", callback_data=f"{CallbackData.ADMIN_TOGGLE_REVIEW_PREFIX}{user_id}"))
+    builder.row(InlineKeyboardButton(text=f"{admin_mark} Админ-права", callback_data=f"{CallbackData.ADMIN_TOGGLE_ADMIN_PREFIX}{user_id}"))
+    builder.row(InlineKeyboardButton(text="🎯 Назначить специальности", callback_data=f"{CallbackData.ADMIN_ASSIGN_SPECS_PREFIX}{user_id}"))
+    builder.row(InlineKeyboardButton(text="🔙 К списку", callback_data="admin_back_list"))
+    return builder.as_markup()
+
+
+def get_admin_specialties_kb(
+    *,
+    target_user_id: int,
+    specialties: list[str],
+    selected_indexes: set[int],
+    page: int,
+    total_pages: int,
+) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for local_idx, specialty in enumerate(specialties):
+        absolute_idx = page * 7 + local_idx
+        mark = "✅" if absolute_idx in selected_indexes else "⬜"
+        builder.row(
+            InlineKeyboardButton(
+                text=f"{mark} {specialty}",
+                callback_data=f"{CallbackData.ADMIN_SPECS_TOGGLE_PREFIX}{target_user_id}_{absolute_idx}",
+            )
+        )
+
+    nav_row = []
+    if page > 0:
+        nav_row.append(
+            InlineKeyboardButton(
+                text="⬅️",
+                callback_data=f"{CallbackData.ADMIN_SPECS_PAGE_PREFIX}{target_user_id}_{page - 1}",
+            )
+        )
+    nav_row.append(InlineKeyboardButton(text=f"{page + 1}/{max(1, total_pages)}", callback_data="noop"))
+    if page < total_pages - 1:
+        nav_row.append(
+            InlineKeyboardButton(
+                text="➡️",
+                callback_data=f"{CallbackData.ADMIN_SPECS_PAGE_PREFIX}{target_user_id}_{page + 1}",
+            )
+        )
+    builder.row(*nav_row)
+    builder.row(
+        InlineKeyboardButton(text="➡️ Далее", callback_data=f"{CallbackData.ADMIN_SPECS_CONFIRM_PREFIX}{target_user_id}"),
+        InlineKeyboardButton(text="❌ Сбросить", callback_data=f"{CallbackData.ADMIN_SPECS_RESET_PREFIX}{target_user_id}"),
+    )
+    builder.row(InlineKeyboardButton(text="🔙 К пользователю", callback_data=f"{CallbackData.ADMIN_USER_PREFIX}{target_user_id}"))
+    return builder.as_markup()
+
+
+def get_admin_specs_confirm_kb(target_user_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"{CallbackData.ADMIN_SPECS_APPLY_PREFIX}{target_user_id}"),
+        InlineKeyboardButton(text="❌ Сбросить", callback_data=f"{CallbackData.ADMIN_SPECS_RESET_PREFIX}{target_user_id}"),
+    )
+    return builder.as_markup()
+
+
+def get_documents_review_kb(tg_user_id: int) -> InlineKeyboardMarkup:
+    """Компактная клавиатура модерации: отдельный вход в список документов + решение."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(
+            text="📂 Документы",
+            callback_data=f"{CallbackData.DOC_FILES_PREFIX}{tg_user_id}",
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="✅ Принять пакет",
+            callback_data=f"{CallbackData.DOC_REVIEW_PREFIX}approve_{tg_user_id}",
+        ),
+        InlineKeyboardButton(
+            text="❌ Отклонить пакет",
+            callback_data=f"{CallbackData.DOC_REVIEW_PREFIX}deny_{tg_user_id}",
+        ),
+    )
+    return builder.as_markup()
+
+
+def get_documents_files_kb(tg_user_id: int) -> InlineKeyboardMarkup:
+    """Список документов пакета, открываемый отдельной кнопкой из карточки."""
+    builder = InlineKeyboardBuilder()
+    doc_buttons = [
+        ("📄 Аттестат/диплом", "dpl"),
+        ("🪪 Удостоверение", "idc"),
+        ("🖼 Фото 3x4", "pht"),
+        ("🏥 Справка 075/у", "med"),
+        ("📊 Сертификат ЕНТ", "ent"),
+    ]
+    for title, code in doc_buttons:
+        builder.row(
+            InlineKeyboardButton(
+                text=title,
+                callback_data=f"{CallbackData.DOC_FILE_PREFIX}{tg_user_id}_{code}",
+            )
+        )
+    return builder.as_markup()

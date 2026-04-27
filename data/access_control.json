@@ -1,0 +1,24 @@
+{
+  "users": {
+    "5394280567": {
+      "can_notify": true,
+      "can_review": true,
+      "groups": [
+        "*"
+      ],
+      "is_admin": true,
+      "specialties": [
+        "*"
+      ]
+    },
+    "1216962667": {
+      "can_notify": true,
+      "can_review": true,
+      "groups": [],
+      "specialties": [
+        "6B11380 - Вычислительная техника и программное обеспечение"
+      ],
+      "is_admin": false
+    }
+  }
+}
