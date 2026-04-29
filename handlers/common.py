@@ -35,6 +35,9 @@ from states.states import HelpRequest
 from utils.i18n import tr
 
 router = Router()
+def _can_manage_support(from_user_id: int) -> bool:
+    return bool(is_admin(from_user_id) or is_responsible_user(from_user_id))
+
 
 
 def _keyboard_anchor_text(lang: str) -> str:
@@ -530,6 +533,9 @@ async def psy_view_alias(callback: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith(CallbackData.SUPPORT_BLOCK_PREFIX))
 async def support_block_prompt(callback: types.CallbackQuery):
+    if not _can_manage_support(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
     payload = callback.data.replace(CallbackData.SUPPORT_BLOCK_PREFIX, "")
     ticket_id, _, mode = payload.partition("_")
     ticket = get_ticket(ticket_id)
@@ -546,6 +552,9 @@ async def support_block_prompt(callback: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith(CallbackData.SUPPORT_BLOCK_CONFIRM_PREFIX))
 async def support_block_confirm(callback: types.CallbackQuery):
+    if not _can_manage_support(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
     payload = callback.data.replace(CallbackData.SUPPORT_BLOCK_CONFIRM_PREFIX, "")
     decision, _, rest = payload.partition("_")
     if decision != "yes":
@@ -562,6 +571,9 @@ async def support_block_confirm(callback: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith(CallbackData.SUPPORT_DELETE_PREFIX))
 async def support_delete_prompt(callback: types.CallbackQuery):
+    if not _can_manage_support(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
     ticket_id = callback.data.replace(CallbackData.SUPPORT_DELETE_PREFIX, "")
     ticket = get_ticket(ticket_id)
     if not ticket:
@@ -576,6 +588,9 @@ async def support_delete_prompt(callback: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith(CallbackData.SUPPORT_DELETE_CONFIRM_PREFIX))
 async def support_delete_confirm(callback: types.CallbackQuery):
+    if not _can_manage_support(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
     payload = callback.data.replace(CallbackData.SUPPORT_DELETE_CONFIRM_PREFIX, "")
     decision, _, ticket_id = payload.partition("_")
     if decision != "yes":

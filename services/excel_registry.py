@@ -1,8 +1,10 @@
 import logging
 import time
-from pathlib import Path
 from typing import Any
 from importlib import import_module
+from pathlib import Path
+
+from core.config import settings
 
 try:
     _openpyxl = import_module("openpyxl")
@@ -10,8 +12,10 @@ except ImportError as exc:  # pragma: no cover - защита на рантай�
     raise RuntimeError("Для работы с Excel установите зависимость openpyxl.") from exc
 
 
-REGISTRY_PATH = Path("data/admissions_registry.xlsx")
-FALLBACK_REGISTRY_PATH = Path("data/admissions_registry_fallback.xlsx")
+REGISTRY_PATH = settings.excel_registry_path
+FALLBACK_REGISTRY_PATH = settings.fallback_excel_registry_path
+ACCOUNTS_PATH = settings.accounts_registry_path
+FALLBACK_ACCOUNTS_PATH = settings.fallback_accounts_registry_path
 SHEET_NAME = "Applicants"
 HEADERS = [
     "Telegram ID",
@@ -29,35 +33,67 @@ HEADERS = [
     "Photo 3x4 File",
     "Medical 075/у File",
     "ENT Certificate File",
+    "Source",
+    "Admission Faculty",
+    "Admission Specialty",
+    "Calculated Discount",
+    "Calculated Year Price",
+    "Calculated Total Price",
     "Review Status",
+]
+ACCOUNT_HEADERS = [
+    "Telegram ID",
+    "Username",
+    "Telegram Profile",
+    "Full Name",
+    "Phone",
+    "Role",
+    "Faculty",
+    "Specialty",
+    "Course",
+    "Group",
+    "Registration Status",
 ]
 
 
-def _ensure_workbook() -> None:
-    REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if REGISTRY_PATH.exists():
+def _ensure_sheet_headers(ws, headers: list[str]) -> None:
+    for idx, header in enumerate(headers, start=1):
+        ws.cell(row=1, column=idx, value=header)
+
+
+def _ensure_workbook(path: Path, headers: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        wb = _openpyxl.load_workbook(path)
+        ws = wb[SHEET_NAME] if SHEET_NAME in wb.sheetnames else wb.active
+        if ws.title != SHEET_NAME:
+            ws.title = SHEET_NAME
+        _ensure_sheet_headers(ws, headers)
+        wb.save(path)
+        wb.close()
         return
     wb = _openpyxl.Workbook()
     ws = wb.active
     ws.title = SHEET_NAME
-    ws.append(HEADERS)
-    wb.save(REGISTRY_PATH)
+    _ensure_sheet_headers(ws, headers)
+    wb.save(path)
+    wb.close()
 
 
-def _open_sheet():
-    _ensure_workbook()
-    wb = _openpyxl.load_workbook(REGISTRY_PATH)
-    ws = wb[SHEET_NAME]
+def _open_sheet(path: Path, headers: list[str]):
+    _ensure_workbook(path, headers)
+    wb = _openpyxl.load_workbook(path)
+    ws = wb[SHEET_NAME] if SHEET_NAME in wb.sheetnames else wb.active
     return wb, ws
 
 
-def _save_workbook_with_retry(wb) -> str:
+def _save_workbook_with_retry(wb, main_path: Path, fallback_path: Path) -> str:
     """Сохраняет книгу устойчиво: ретраи на lock и fallback-файл при блокировке."""
     retries = 3
     for attempt in range(1, retries + 1):
         try:
-            wb.save(REGISTRY_PATH)
-            return str(REGISTRY_PATH)
+            wb.save(main_path)
+            return str(main_path)
         except PermissionError as err:
             logging.warning(
                 "Файл реестра занят (попытка %s/%s): %s",
@@ -68,12 +104,12 @@ def _save_workbook_with_retry(wb) -> str:
             if attempt < retries:
                 time.sleep(0.35)
 
-    wb.save(FALLBACK_REGISTRY_PATH)
+    wb.save(fallback_path)
     logging.error(
         "Основной Excel-файл заблокирован. Данные сохранены в fallback: %s",
-        FALLBACK_REGISTRY_PATH,
+        fallback_path,
     )
-    return str(FALLBACK_REGISTRY_PATH)
+    return str(fallback_path)
 
 
 def _find_row_by_tg_id(ws, tg_user_id: int) -> int | None:
@@ -107,7 +143,7 @@ def _doc_status(package: dict[str, Any], doc_key: str) -> str:
 
 
 def upsert_applicant_record(package: dict[str, Any]) -> str:
-    wb, ws = _open_sheet()
+    wb, ws = _open_sheet(REGISTRY_PATH, HEADERS)
     try:
         tg_user_id = int(package["tg_user_id"])
         row_idx = _find_row_by_tg_id(ws, tg_user_id)
@@ -133,10 +169,46 @@ def upsert_applicant_record(package: dict[str, Any]) -> str:
             _doc_status(package, "photo_3x4"),
             _doc_status(package, "medical_075"),
             _doc_status(package, "ent_certificate"),
+            package.get("source", ""),
+            package.get("admission_faculty") or package.get("faculty", ""),
+            package.get("admission_specialty") or package.get("specialty", ""),
+            f"{int(float(package.get('calc_discount_rate', 0.0)) * 100)}%",
+            package.get("calc_year_price", ""),
+            package.get("calc_total_price", ""),
             package.get("review_status", "approved"),
         ]
         for col_idx, value in enumerate(values, start=1):
             ws.cell(row=row_idx, column=col_idx, value=value)
-        return _save_workbook_with_retry(wb)
+        return _save_workbook_with_retry(wb, REGISTRY_PATH, FALLBACK_REGISTRY_PATH)
+    finally:
+        wb.close()
+
+
+def upsert_registration_account_record(record: dict[str, Any]) -> str:
+    wb, ws = _open_sheet(ACCOUNTS_PATH, ACCOUNT_HEADERS)
+    try:
+        tg_user_id = int(record["tg_user_id"])
+        row_idx = _find_row_by_tg_id(ws, tg_user_id)
+        if row_idx is None:
+            row_idx = ws.max_row + 1
+
+        username = record.get("tg_username", "")
+        profile_link = _build_profile_link(username, tg_user_id)
+        values = [
+            tg_user_id,
+            username,
+            profile_link,
+            record.get("fio", ""),
+            record.get("phone", ""),
+            record.get("role", ""),
+            record.get("faculty", ""),
+            record.get("specialty", ""),
+            record.get("course", ""),
+            record.get("group", ""),
+            record.get("status", "pending"),
+        ]
+        for col_idx, value in enumerate(values, start=1):
+            ws.cell(row=row_idx, column=col_idx, value=value)
+        return _save_workbook_with_retry(wb, ACCOUNTS_PATH, FALLBACK_ACCOUNTS_PATH)
     finally:
         wb.close()

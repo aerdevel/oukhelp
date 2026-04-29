@@ -3,9 +3,9 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 def get_main_action_kb(lang: str, *, is_registered: bool, is_reviewer: bool, is_admin: bool) -> ReplyKeyboardMarkup:
     buttons: list[KeyboardButton] = []
 
+    buttons.append(KeyboardButton(text="🆘 Помощь" if lang == "ru" else "🆘 Көмек"))
     if is_registered:
         buttons.append(KeyboardButton(text="🧾 Мой кабинет" if lang == "ru" else "🧾 Жеке кабинет"))
-        buttons.append(KeyboardButton(text="🆘 Помощь" if lang == "ru" else "🆘 Көмек"))
 
     if is_reviewer:
         buttons.append(KeyboardButton(text="🛂 Центр модерации" if lang == "ru" else "🛂 Модерация орталығы"))

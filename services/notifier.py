@@ -52,7 +52,7 @@ async def notify_responsible_new_registration(bot: Bot, user_data: dict):
         text += f"🎓 Курс: {user_data.get('course')}\n"
 
     # Кнопки модерации заявки.
-    kb = get_admin_approve_kb(user_phone)
+    kb = get_admin_approve_kb(int(tg_user_id))
 
     for target_chat_id in target_chat_ids:
         try:
@@ -121,6 +121,8 @@ async def send_documents_package_for_review(bot: Bot, package: dict):
     review_chat_id = settings.moderation_chat_id
     username_text = f"@{package.get('tg_username')}" if package.get("tg_username") else "-"
     tg_user_id = package["tg_user_id"]
+    applied_discounts = package.get("calc_applied_discounts") or []
+    discounts_text = ", ".join(str(item) for item in applied_discounts) if applied_discounts else "-"
     summary = (
         "📦 Новый пакет документов\n\n"
         f"👤 ФИО: {package.get('fio', '-')}\n"
@@ -128,7 +130,14 @@ async def send_documents_package_for_review(bot: Bot, package: dict):
         f"🆔 Telegram ID: {tg_user_id}\n"
         f"🔗 Username: {username_text}\n"
         f"🎭 Статус: {package.get('role', '-')}\n"
+        f"📢 Источник: {package.get('source', '-')}\n"
+        f"🏛 Кафедра поступления: {package.get('admission_faculty', '-')}\n"
+        f"🎓 Специальность поступления: {package.get('admission_specialty', '-')}\n"
         f"📚 Группа: {package.get('group', '-')}\n"
+        f"💸 Скидка: {int(float(package.get('calc_discount_rate', 0.0)) * 100)}%\n"
+        f"🏷 Льготы: {discounts_text}\n"
+        f"💰 Цена (1 год): {package.get('calc_year_price', '-')}\n"
+        f"🏛 Цена (4 года): {package.get('calc_total_price', '-')}\n"
         "Нажмите на нужный документ в кнопках ниже, чтобы открыть его прямо в чате."
     )
     kb = get_documents_review_kb(tg_user_id)

@@ -1,5 +1,5 @@
 {
-  "seq_ticket": 10008,
+  "seq_ticket": 10009,
   "user_aliases": {
     "5394280567": "987419",
     "1216962667": "548657"
@@ -181,10 +181,10 @@
       "user_id": 1216962667,
       "anonymous_id": "548657",
       "anonymous": true,
-      "status": "waiting_user",
+      "status": "closed",
       "created_at": "2026-04-27T14:48:31.547476+00:00",
-      "updated_at": "2026-04-27T14:49:02.475296+00:00",
-      "closed_at": null,
+      "updated_at": "2026-04-29T16:16:36.986647+00:00",
+      "closed_at": "2026-04-29T16:16:36.986647+00:00",
       "closed_by_user": false,
       "rating": null,
       "psychologist_stats": {
@@ -214,7 +214,7 @@
         }
       ],
       "last_psychologist_reply_at": "2026-04-27T14:49:02.475296+00:00",
-      "next_user_ping_at": "2026-04-28T14:49:02.475296+00:00",
+      "next_user_ping_at": null,
       "chat_messages": [
         {
           "chat_id": -1003510784374,
@@ -248,7 +248,8 @@
           "chat_id": 1216962667,
           "message_id": 544
         }
-      ]
+      ],
+      "auto_close_notified": true
     },
     "10005": {
       "ticket_id": "10005",
@@ -546,6 +547,32 @@
         }
       ],
       "rating_comment": "луаола"
+    },
+    "10009": {
+      "ticket_id": "10009",
+      "topic_code": "psy",
+      "user_id": 5394280567,
+      "anonymous_id": "987419",
+      "anonymous": true,
+      "status": "closed",
+      "created_at": "2026-04-29T16:22:21.977765+00:00",
+      "updated_at": "2026-04-29T16:22:28.947364+00:00",
+      "closed_at": "2026-04-29T16:22:28.947364+00:00",
+      "closed_by_user": true,
+      "rating": null,
+      "psychologist_stats": {},
+      "staff_profiles": {},
+      "messages": [
+        {
+          "from": "user",
+          "at": "2026-04-29T16:22:27.534612+00:00",
+          "kind": "text",
+          "preview": "л"
+        }
+      ],
+      "last_psychologist_reply_at": null,
+      "next_user_ping_at": null,
+      "chat_messages": []
     }
   },
   "message_links": {

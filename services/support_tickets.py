@@ -404,6 +404,7 @@ async def process_due_auto_close(bot: Bot, hours: int = 48, limit: int = 50) -> 
     data = _read_store()
     now = datetime.now(timezone.utc)
     closed = 0
+    notification_flags_changed = False
     for ticket in data["tickets"].values():
         if ticket.get("status") != "waiting_user":
             continue
@@ -455,6 +456,7 @@ async def process_due_auto_close(bot: Bot, hours: int = 48, limit: int = 50) -> 
             except Exception:
                 pass
         ticket["auto_close_notified"] = True
-    if closed:
+        notification_flags_changed = True
+    if notification_flags_changed:
         _write_store(data)
     return closed

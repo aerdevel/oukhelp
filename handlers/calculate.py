@@ -42,6 +42,8 @@ def _build_categories_kb(lang: str, selected_keys: list[str]) -> types.InlineKey
 
 
 def _calc_total_discount(selected: list[str], lang: str) -> tuple[float, list[str]]:
+    if "none" in selected:
+        return 0.0, [DISCOUNTS[lang]["none"][0]]
     unt_keys = [key for key in selected if key.startswith("unt_")]
     other_keys = [key for key in selected if not key.startswith("unt_")]
 
@@ -65,6 +67,18 @@ async def select_specialty_for_calc(callback: types.CallbackQuery, state: FSMCon
     await callback.answer()
     data = await state.get_data()
     lang = data.get("locale", "ru")
+    back_callback = data.get("calc_back_callback") or CallbackData.LEVEL_UNI
+    preset_specialty = data.get("calc_specialty")
+    preset_categories = data.get("calc_categories", [])
+
+    # Если расчет открыт из сценария перечня, не заставляем пользователя
+    # повторно выбирать кафедру/специальность.
+    if preset_specialty and back_callback == CallbackData.DOCS:
+        await callback.message.edit_text(
+            _category_prompt(lang),
+            reply_markup=_build_categories_kb(lang, list(preset_categories)),
+        )
+        return
 
     text = "Выберите кафедру для расчета:" if lang == "ru" else "Есептеу үшін кафедраны таңдаңыз:"
     await callback.message.edit_text(
@@ -72,7 +86,7 @@ async def select_specialty_for_calc(callback: types.CallbackQuery, state: FSMCon
         reply_markup=ikb.get_faculties_kb(
             lang,
             prefix=CallbackData.CALC_FAC_PREFIX,
-            back_callback=CallbackData.LEVEL_UNI,
+            back_callback=back_callback,
         ),
     )
 
@@ -163,7 +177,11 @@ async def toggle_category(callback: types.CallbackQuery, state: FSMContext):
     if category_key in selected:
         selected.remove(category_key)
     else:
-        selected.append(category_key)
+        if category_key == "none":
+            selected = ["none"]
+        else:
+            selected = [key for key in selected if key != "none"]
+            selected.append(category_key)
     await state.update_data(calc_categories=selected)
     await callback.message.edit_text(_category_prompt(lang), reply_markup=_build_categories_kb(lang, selected))
 
@@ -195,25 +213,47 @@ async def show_calculation(callback: types.CallbackQuery, state: FSMContext):
 
     if lang == "ru":
         result = (
-            f"📈 Ваш расчет стоимости:\n\n"
-            f"Специальность: {specialty}\n"
-            f"Выбранные категории: {', '.join(selected_labels)}\n"
-            f"Учтенные льготы: {', '.join(applied_labels)}\n"
-            f"Итоговая скидка: {int(rate*100)}%\n"
-            f"────────────────────\n"
-            f"💰 Цена за 1 год: {year_price:,} ₸\n"
-            f"🏛 Итого за 4 года: {total_price:,} ₸"
+            "📊 Калькулятор стоимости обучения\n\n"
+            f"🎓 Специальность: {specialty}\n"
+            f"🧩 Выбранные категории: {', '.join(selected_labels)}\n"
+            f"✅ Учтенные льготы: {', '.join(applied_labels)}\n"
+            f"💸 Итоговая скидка: {int(rate*100)}%\n"
+            "────────────────────\n"
+            f"💰 Стоимость за 1 год: {year_price:,} ₸\n"
+            f"🏛 Стоимость за 4 года: {total_price:,} ₸\n\n"
+            "ℹ️ Расчет предварительный. Финальная сумма подтверждается приемной комиссией."
         ).replace(",", " ")
     else:
         result = (
-            f"📈 Оқу құнының есебі:\n\n"
-            f"Мамандық: {specialty}\n"
-            f"Таңдалған санаттар: {', '.join(selected_labels)}\n"
-            f"Ескерілген жеңілдіктер: {', '.join(applied_labels)}\n"
-            f"Жалпы жеңілдік: {int(rate*100)}%\n"
-            f"────────────────────\n"
-            f"💰 1 жылға: {year_price:,} ₸\n"
-            f"🏛 4 жылға барлығы: {total_price:,} ₸"
+            "📊 Оқу құны калькуляторы\n\n"
+            f"🎓 Мамандық: {specialty}\n"
+            f"🧩 Таңдалған санаттар: {', '.join(selected_labels)}\n"
+            f"✅ Ескерілген жеңілдіктер: {', '.join(applied_labels)}\n"
+            f"💸 Жалпы жеңілдік: {int(rate*100)}%\n"
+            "────────────────────\n"
+            f"💰 1 жылға құны: {year_price:,} ₸\n"
+            f"🏛 4 жылға құны: {total_price:,} ₸\n\n"
+            "ℹ️ Бұл алдын ала есеп. Соңғы соманы қабылдау комиссиясы растайды."
         ).replace(",", " ")
 
-    await callback.message.edit_text(result, reply_markup=ikb.get_back_kb(lang, CallbackData.CALC_START))
+    await state.update_data(
+        calc_discount_rate=rate,
+        calc_applied_discounts=applied_labels,
+        calc_year_price=year_price,
+        calc_total_price=total_price,
+        calc_completed=True,
+    )
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        types.InlineKeyboardButton(
+            text="📨 Отправить перечень документов" if lang == "ru" else "📨 Құжаттар тізімін жіберу",
+            callback_data=CallbackData.DOCS,
+        )
+    )
+    builder.row(
+        types.InlineKeyboardButton(
+            text="🔙 Назад" if lang == "ru" else "🔙 Артқа",
+            callback_data=CallbackData.CALC_START,
+        )
+    )
+    await callback.message.edit_text(result, reply_markup=builder.as_markup())

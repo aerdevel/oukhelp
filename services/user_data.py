@@ -1,4 +1,5 @@
 import shutil
+import logging
 from pathlib import Path
 
 from services.documents_store import delete_user_package_data, get_any_package
@@ -26,8 +27,11 @@ def delete_user_data(tg_user_id: int) -> dict[str, bool]:
     files_path = FILES_ROOT / str(tg_user_id)
     files_deleted = False
     if files_path.exists():
-        shutil.rmtree(files_path)
-        files_deleted = True
+        try:
+            shutil.rmtree(files_path)
+            files_deleted = True
+        except OSError as err:
+            logging.warning("Не удалось удалить файлы пользователя %s: %s", tg_user_id, err)
     return {
         "registration_deleted": reg_deleted,
         "documents_deleted": docs_deleted,

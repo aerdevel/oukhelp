@@ -6,12 +6,12 @@ from services.access_control import get_user_permissions
 from services.registration_store import get_approved_user
 
 
-def get_admin_approve_kb(user_phone: str) -> InlineKeyboardMarkup:
+def get_admin_approve_kb(tg_user_id: int) -> InlineKeyboardMarkup:
     """Клавиатура модерации регистрационных заявок."""
     builder = InlineKeyboardBuilder()
     builder.row(
-        InlineKeyboardButton(text="✅ Одобрить", callback_data=f"reg_approve_{user_phone}"),
-        InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reg_deny_{user_phone}")
+        InlineKeyboardButton(text="✅ Одобрить", callback_data=f"{CallbackData.REVIEW_ACTION_PREFIX}approve_{tg_user_id}"),
+        InlineKeyboardButton(text="❌ Отклонить", callback_data=f"{CallbackData.REVIEW_ACTION_PREFIX}deny_{tg_user_id}"),
     )
     return builder.as_markup()
 

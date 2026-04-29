@@ -15,6 +15,7 @@ from keyboards import inline as ikb
 from keyboards import reply as rkb
 from services.notifier import notify_responsible_new_registration
 from services.audit_log import append_audit_event
+from services.excel_registry import upsert_registration_account_record
 from services.registration_store import (
     add_pending_registration,
     approve_registration,
@@ -172,6 +173,16 @@ async def _process_phone_input(message: types.Message, state: FSMContext):
     lang = data.get("locale", "ru")
     raw_phone = ""
     if message.contact and message.contact.phone_number:
+        if message.contact.user_id and int(message.contact.user_id) != int(message.from_user.id):
+            await message.answer(
+                tr(
+                    lang,
+                    "❌ Отправьте, пожалуйста, именно свой контакт через кнопку ниже.",
+                    "❌ Төмендегі батырма арқылы өз байланысыңызды жіберіңіз.",
+                ),
+                reply_markup=rkb.get_phone_kb(lang),
+            )
+            return
         raw_phone = str(message.contact.phone_number)
     elif message.text:
         raw_phone = str(message.text)
@@ -180,8 +191,8 @@ async def _process_phone_input(message: types.Message, state: FSMContext):
         await message.answer(
             tr(
                 lang,
-                "Введите номер вручную в формате +7XXXXXXXXXX или 87XXXXXXXXX:",
-                "+7XXXXXXXXXX немесе 87XXXXXXXXX форматында нөмірді қолмен енгізіңіз:",
+                "Если кнопка не отправляет контакт (часто на Desktop), введите номер вручную в формате +7XXXXXXXXXX или 87XXXXXXXXX:",
+                "Егер батырма контакт жібермесе (Desktop-та жиі болады), нөмірді +7XXXXXXXXXX немесе 87XXXXXXXXX форматында қолмен енгізіңіз:",
             ),
             reply_markup=rkb.get_phone_kb(lang),
         )
@@ -198,10 +209,24 @@ async def _process_phone_input(message: types.Message, state: FSMContext):
         )
         return
     if not validate_phone(raw_phone):
-        await message.answer(tr(lang, "❌ Номер введен неверно. Попробуйте еще раз:", "❌ Нөмір қате. Қайта көріңіз:"))
+        await message.answer(
+            tr(
+                lang,
+                "❌ Номер распознан некорректно. Пример: +77011234567 или 87011234567.",
+                "❌ Нөмір қате танылды. Мысал: +77011234567 немесе 87011234567.",
+            )
+        )
         return
-    await state.update_data(phone=format_phone(raw_phone))
+    normalized_phone = format_phone(raw_phone)
+    await state.update_data(phone=normalized_phone)
     await message.answer(tr(lang, "✅ Номер принят.", "✅ Нөмір қабылданды."), reply_markup=ReplyKeyboardRemove())
+    await message.answer(
+        tr(
+            lang,
+            f"Ваш номер сохранен: {normalized_phone}",
+            f"Нөміріңіз сақталды: {normalized_phone}",
+        )
+    )
     try:
         await message.answer(
             tr(lang, "Выберите ваш статус:", "Статусыңызды таңдаңыз:"),
@@ -365,8 +390,10 @@ async def process_group(message: types.Message, state: FSMContext):
 async def confirm_registration(callback: types.CallbackQuery, state: FSMContext):
     user_data = await state.get_data()
     lang = user_data.get("locale", "ru")
-    await notify_responsible_new_registration(callback.bot, user_data)
     add_pending_registration(user_data)
+    user_data["status"] = "pending"
+    upsert_registration_account_record(user_data)
+    await notify_responsible_new_registration(callback.bot, user_data)
     text = (
         "✅ Заявка отправлена. Ожидайте, с вами свяжется ответственный менеджер."
         if lang == "ru"
@@ -506,6 +533,9 @@ async def review_action(callback: types.CallbackQuery, state: FSMContext):
             await callback.answer("Некорректная заявка.", show_alert=True)
             return
         pending = [item for item in get_pending_all() if item.get("phone") == phone]
+        if len(pending) > 1:
+            await callback.answer("Найдено несколько заявок с этим телефоном. Откройте карточку через список.", show_alert=True)
+            return
         target_user_id = int(pending[0].get("tg_user_id")) if pending else None
     if target_user_id is None:
         await callback.answer("Заявка уже обработана.", show_alert=True)
@@ -523,6 +553,7 @@ async def review_action(callback: types.CallbackQuery, state: FSMContext):
         if not approved:
             await callback.answer("Заявка уже обработана.", show_alert=True)
             return
+        upsert_registration_account_record(approved)
         try:
             await callback.bot.send_message(int(approved.get("tg_user_id")), tr(lang, "✅ Ваша регистрация одобрена. Теперь доступен раздел «Мой кабинет».", "✅ Тіркелуіңіз мақұлданды. Енді «Жеке кабинет» бөлімі қолжетімді."))
         except Exception as err:
@@ -538,6 +569,7 @@ async def review_action(callback: types.CallbackQuery, state: FSMContext):
         if not denied:
             await callback.answer("Заявка уже обработана.", show_alert=True)
             return
+        upsert_registration_account_record(denied)
         try:
             await callback.bot.send_message(int(denied.get("tg_user_id")), tr(lang, "❌ Заявка отклонена. Пожалуйста, заполните анкету повторно.", "❌ Өтінім қабылданбады. Анкетаны қайта толтырыңыз."))
         except Exception as err:

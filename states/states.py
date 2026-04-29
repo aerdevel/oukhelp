@@ -15,6 +15,9 @@ class DocumentUpload(StatesGroup):
     """FSM-этапы поочередной загрузки пакета документов."""
     waiting_for_fio = State()      # ФИО для абитуриентов без предварительной анкеты.
     waiting_for_phone = State()    # Контакт для обратной связи и обработки в приемной.
+    waiting_for_source = State()   # Откуда абитуриент узнал об университете.
+    waiting_for_faculty = State()  # Выбор кафедры поступления.
+    waiting_for_specialty = State()  # Выбор специальности поступления.
     waiting_for_diploma = State()  # Аттестат/диплом задает базу для проверки пакета.
     waiting_for_id = State()       # Идентификация личности заявителя.
     waiting_for_photo = State()    # Фото для личного дела.

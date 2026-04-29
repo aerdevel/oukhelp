@@ -1,12 +1,6 @@
 {
   "pending": [
     {
-      "responsible_ids": [
-        5394280567
-      ],
-      "created_at": "2026-04-27T13:27:16.807865+00:00"
-    },
-    {
       "action_kb_initialized": true,
       "tg_user_id": 1216962667,
       "tg_full_name": "nevermore <3",
@@ -23,6 +17,10 @@
         5394280567
       ],
       "created_at": "2026-04-27T16:57:47.425586+00:00"
+    },
+    {
+      "created_at": "2026-04-29T17:15:15.634057+00:00",
+      "status": "pending"
     }
   ],
   "approved": [
@@ -54,25 +52,55 @@
     {
       "current_choice": "Университет",
       "action_kb_initialized": true,
-      "locale": "ru",
+      "calc_faculty": "Инженерные технологии",
+      "calc_specialty": "6B11380 - Вычислительная техника и программное обеспечение",
+      "calc_categories": [
+        "unt_100"
+      ],
+      "calc_discount_rate": 1.0,
+      "calc_applied_discounts": [
+        "ЕНТ 100+ баллов (Грант)"
+      ],
+      "calc_year_price": 0,
+      "calc_total_price": 0,
+      "calc_completed": true,
+      "fio": "rjrrk ej'",
+      "phone": "+77700042874",
+      "source": "kkkk",
+      "doc_diploma": {
+        "kind": "photo",
+        "file_id": "AgACAgIAAxkBAAIFbGnyL7dgiyPym8h0ZQ0JlhfVxDKjAAI9GGsbWXGRS0EwTVWBYPv4AQADAgADeAADOwQ"
+      },
+      "doc_id_card": {
+        "kind": "photo",
+        "file_id": "AgACAgIAAxkBAAIFbGnyL7dgiyPym8h0ZQ0JlhfVxDKjAAI9GGsbWXGRS0EwTVWBYPv4AQADAgADeAADOwQ"
+      },
+      "doc_photo_3x4": {
+        "kind": "photo",
+        "file_id": "AgACAgIAAxkBAAIFbGnyL7dgiyPym8h0ZQ0JlhfVxDKjAAI9GGsbWXGRS0EwTVWBYPv4AQADAgADeAADOwQ"
+      },
+      "doc_medical_075": {
+        "kind": "photo",
+        "file_id": "AgACAgIAAxkBAAIFbGnyL7dgiyPym8h0ZQ0JlhfVxDKjAAI9GGsbWXGRS0EwTVWBYPv4AQADAgADeAADOwQ"
+      },
+      "doc_ent_certificate": {
+        "kind": "photo",
+        "file_id": "AgACAgIAAxkBAAIFbGnyL7dgiyPym8h0ZQ0JlhfVxDKjAAI9GGsbWXGRS0EwTVWBYPv4AQADAgADeAADOwQ"
+      },
+      "documents_consent": true,
       "tg_user_id": 5394280567,
       "tg_full_name": "Pawa Dura",
       "tg_username": "spisoq",
-      "fio": "кпкпкпкппкпкпк",
-      "phone": "+77004287470",
       "role": "Работник",
       "faculty": "-",
       "specialty": "-",
       "course": "-",
       "group": "-",
-      "responsible_ids": [
-        5394280567
-      ],
-      "created_at": "2026-04-27T16:57:00.697591+00:00",
+      "created_at": "2026-04-29T17:17:41.003082+00:00",
       "status": "approved",
       "reviewed_by": 5394280567,
       "reviewed_by_username": "spisoq",
-      "reviewed_at": "2026-04-27T16:57:01.650095+00:00"
+      "reviewed_at": "2026-04-29T17:17:42.932356+00:00"
     }
   ],
   "denied": []

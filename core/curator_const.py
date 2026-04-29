@@ -14,7 +14,11 @@ def get_responsible_id(role: str, group: str = None, specialty: str | None = Non
 
 
 def get_all_responsible_ids() -> set[int]:
-    return {user_id for user_id, _ in list_managers()}
+    return {
+        user_id
+        for user_id, profile in list_managers()
+        if bool(profile.get("can_review")) or bool(profile.get("is_admin"))
+    }
 
 
 def is_responsible_user(user_id: int, group: str | None = None, specialty: str | None = None) -> bool:

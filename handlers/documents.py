@@ -3,8 +3,11 @@ import logging
 from aiogram import F, Router, types
 from aiogram.fsm.context import FSMContext
 from aiogram.types import ReplyKeyboardRemove
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from core.config import settings
+from core.resources.text_file.catalog import SPECIALTIES_BY_DEPARTMENT
+from core.resources.text_file.pricing import BASE_TUITION_YEAR
 from states.states import DocumentUpload
 from core.callbacks import CallbackData
 from core.curator_const import is_responsible_user
@@ -22,6 +25,7 @@ from services.documents_files import persist_documents_locally
 from services.excel_registry import upsert_applicant_record
 from services.notifier import send_documents_package_for_review
 from services.registration_store import get_approved_user
+from services.calculator import calculate_tuition
 from utils.i18n import tr
 from utils.validators import format_phone, sanitize_text, validate_phone
 
@@ -58,6 +62,13 @@ async def _build_docs_package(state: FSMContext, sender: types.User) -> dict:
         "specialty": data.get("specialty") or approved_profile.get("specialty", "-"),
         "course": data.get("course") or approved_profile.get("course", "-"),
         "phone": data.get("phone") or approved_profile.get("phone", "-"),
+        "source": data.get("source") or "-",
+        "admission_faculty": data.get("admission_faculty") or data.get("calc_faculty") or "-",
+        "admission_specialty": data.get("admission_specialty") or data.get("calc_specialty") or "-",
+        "calc_discount_rate": float(data.get("calc_discount_rate") or 0.0),
+        "calc_year_price": data.get("calc_year_price") or "",
+        "calc_total_price": data.get("calc_total_price") or "",
+        "calc_applied_discounts": data.get("calc_applied_discounts") or [],
         "documents": {
             "diploma": data.get("doc_diploma"),
             "id_card": data.get("doc_id_card"),
@@ -79,6 +90,15 @@ async def _ask_diploma_step(target: types.Message | types.CallbackQuery, lang: s
         await target.message.edit_text(text, reply_markup=ikb.get_back_kb(lang, CallbackData.DOCS))
     else:
         await target.answer(text, reply_markup=ikb.get_back_kb(lang, CallbackData.DOCS))
+
+
+async def _ask_faculty_step(target: types.Message | types.CallbackQuery, lang: str) -> None:
+    text = tr(lang, "Выберите кафедру поступления:", "Түсетін кафедраны таңдаңыз:")
+    kb = ikb.get_faculties_kb(lang, prefix=CallbackData.DOC_FAC_PREFIX, back_callback=CallbackData.DOCS)
+    if isinstance(target, types.CallbackQuery):
+        await target.message.edit_text(text, reply_markup=kb)
+    else:
+        await target.answer(text, reply_markup=kb)
 
 
 @router.callback_query(F.data == CallbackData.DOCS)
@@ -139,8 +159,48 @@ async def start_upload(callback: types.CallbackQuery, state: FSMContext):
         return
 
     await state.update_data(fio=fio, phone=format_phone(phone))
-    await state.set_state(DocumentUpload.waiting_for_diploma)
-    await _ask_diploma_step(callback, lang)
+    admission_specialty = data.get("admission_specialty") or data.get("calc_specialty")
+    if not admission_specialty:
+        await state.set_state(DocumentUpload.waiting_for_faculty)
+        await _ask_faculty_step(callback, lang)
+        await callback.answer()
+        return
+    if not bool(data.get("calc_completed")):
+        builder = InlineKeyboardBuilder()
+        builder.row(
+            types.InlineKeyboardButton(
+                text=tr(lang, "💰 Выбрать льготы и рассчитать цену", "💰 Жеңілдіктерді таңдап, бағасын есептеу"),
+                callback_data=CallbackData.CALC_START,
+            )
+        )
+        builder.row(types.InlineKeyboardButton(text=tr(lang, "🔙 К перечню", "🔙 Тізімге"), callback_data=CallbackData.DOCS))
+        await callback.message.edit_text(
+            tr(
+                lang,
+                "Перед отправкой перечня выберите льготы в калькуляторе и получите итоговую стоимость.",
+                "Тізімді жібермес бұрын калькуляторда жеңілдіктерді таңдап, соңғы құнын есептеңіз.",
+            ),
+            reply_markup=builder.as_markup(),
+        )
+        await callback.answer()
+        return
+    if not data.get("source"):
+        await state.set_state(DocumentUpload.waiting_for_source)
+        await callback.message.edit_text(
+            tr(
+                lang,
+                "Укажите, пожалуйста, откуда вы узнали об университете:",
+                "Университет туралы қайдан білгеніңізді жазыңыз:",
+            ),
+            reply_markup=ikb.get_back_kb(lang, CallbackData.DOCS),
+        )
+        await callback.answer()
+        return
+    if data.get("source") and admission_specialty:
+        await state.set_state(DocumentUpload.waiting_for_diploma)
+        await _ask_diploma_step(callback, lang)
+        await callback.answer()
+        return
     await callback.answer()
 
 
@@ -179,13 +239,23 @@ async def docs_collect_phone_contact(message: types.Message, state: FSMContext):
 async def docs_collect_phone_common(message: types.Message, state: FSMContext):
     data = await state.get_data()
     lang = data.get("locale", "ru")
+    if message.contact and message.contact.user_id and int(message.contact.user_id) != int(message.from_user.id):
+        await message.answer(
+            tr(
+                lang,
+                "Отправьте, пожалуйста, свой контакт через кнопку ниже.",
+                "Төмендегі батырма арқылы өз контактіңізді жіберіңіз.",
+            ),
+            reply_markup=rkb.get_phone_kb(lang),
+        )
+        return
     raw_phone = message.contact.phone_number if message.contact else (message.text or "")
     if raw_phone in {"📱 Отправить контакт", "📱 Контактіні жіберу"}:
         await message.answer(
             tr(
                 lang,
-                "Введите номер вручную в формате +7XXXXXXXXXX или 87XXXXXXXXX:",
-                "+7XXXXXXXXXX немесе 87XXXXXXXXX форматында нөмірді қолмен енгізіңіз:",
+                "Если кнопка не отправляет контакт (часто на Desktop), введите номер вручную в формате +7XXXXXXXXXX или 87XXXXXXXXX:",
+                "Егер батырма контакт жібермесе (Desktop-та жиі болады), нөмірді +7XXXXXXXXXX немесе 87XXXXXXXXX форматында қолмен енгізіңіз:",
             ),
             reply_markup=rkb.get_phone_kb(lang),
         )
@@ -194,15 +264,122 @@ async def docs_collect_phone_common(message: types.Message, state: FSMContext):
         await message.answer(
             tr(
                 lang,
-                "Номер введен неверно. Попробуйте еще раз:",
-                "Нөмір қате енгізілді. Қайта көріңіз:",
+                "❌ Номер распознан некорректно. Пример: +77011234567 или 87011234567.",
+                "❌ Нөмір қате танылды. Мысал: +77011234567 немесе 87011234567.",
             )
         )
         return
-    await state.update_data(phone=format_phone(raw_phone))
-    await state.set_state(DocumentUpload.waiting_for_diploma)
+    normalized_phone = format_phone(raw_phone)
+    await state.update_data(phone=normalized_phone)
+    await state.set_state(DocumentUpload.waiting_for_faculty)
     await message.answer(tr(lang, "✅ Номер принят.", "✅ Нөмір қабылданды."), reply_markup=ReplyKeyboardRemove())
+    await message.answer(
+        tr(
+            lang,
+            f"Ваш номер сохранен: {normalized_phone}",
+            f"Нөміріңіз сақталды: {normalized_phone}",
+        )
+    )
+    await _ask_faculty_step(message, lang)
+
+
+@router.message(DocumentUpload.waiting_for_source)
+async def docs_collect_source(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    lang = data.get("locale", "ru")
+    source = sanitize_text(message.text or "")
+    if len(source) < 3:
+        await message.answer(tr(lang, "Уточните источник (минимум 3 символа).", "Дереккөзді нақтылаңыз (кемінде 3 таңба)."))
+        return
+    await state.update_data(source=source)
+    await state.set_state(DocumentUpload.waiting_for_diploma)
     await _ask_diploma_step(message, lang)
+
+
+@router.callback_query(DocumentUpload.waiting_for_faculty, F.data.startswith(CallbackData.DOC_FAC_PREFIX))
+async def docs_select_faculty(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    lang = data.get("locale", "ru")
+    raw_idx = callback.data.replace(CallbackData.DOC_FAC_PREFIX, "")
+    faculties = list(SPECIALTIES_BY_DEPARTMENT[lang].keys())
+    if not raw_idx.isdigit() or int(raw_idx) >= len(faculties):
+        await callback.answer("Некорректный выбор кафедры.", show_alert=True)
+        return
+    idx = int(raw_idx)
+    selected_faculty = faculties[idx]
+    await state.update_data(admission_faculty=selected_faculty)
+    builder = InlineKeyboardBuilder()
+    for spec_idx, specialty in enumerate(SPECIALTIES_BY_DEPARTMENT[lang][selected_faculty]):
+        builder.row(
+            types.InlineKeyboardButton(
+                text=specialty,
+                callback_data=f"{CallbackData.DOC_SPEC_PREFIX}{idx}_{spec_idx}",
+            )
+        )
+    builder.row(types.InlineKeyboardButton(text="🔙 Назад" if lang == "ru" else "🔙 Артқа", callback_data=CallbackData.DOCS))
+    await state.set_state(DocumentUpload.waiting_for_specialty)
+    await callback.message.edit_text(
+        tr(lang, "Выберите специальность поступления:", "Түсетін мамандықты таңдаңыз:"),
+        reply_markup=builder.as_markup(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(DocumentUpload.waiting_for_specialty, F.data.startswith(CallbackData.DOC_SPEC_PREFIX))
+async def docs_select_specialty(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    lang = data.get("locale", "ru")
+    payload = callback.data.replace(CallbackData.DOC_SPEC_PREFIX, "")
+    fac_raw, _, spec_raw = payload.partition("_")
+    faculties = list(SPECIALTIES_BY_DEPARTMENT[lang].keys())
+    if not fac_raw.isdigit() or not spec_raw.isdigit():
+        await callback.answer("Некорректный выбор специальности.", show_alert=True)
+        return
+    fac_idx = int(fac_raw)
+    spec_idx = int(spec_raw)
+    if fac_idx >= len(faculties):
+        await callback.answer("Некорректный выбор специальности.", show_alert=True)
+        return
+    selected_faculty = faculties[fac_idx]
+    specialties = SPECIALTIES_BY_DEPARTMENT[lang][selected_faculty]
+    if spec_idx >= len(specialties):
+        await callback.answer("Некорректный выбор специальности.", show_alert=True)
+        return
+    selected_specialty = specialties[spec_idx]
+    year_price, total_price = calculate_tuition(BASE_TUITION_YEAR, 0.0)
+    await state.update_data(
+        admission_faculty=selected_faculty,
+        admission_specialty=selected_specialty,
+        calc_faculty=selected_faculty,
+        calc_specialty=selected_specialty,
+        calc_back_callback=CallbackData.DOCS,
+        calc_categories=[],
+        calc_discount_rate=0.0,
+        calc_year_price=year_price,
+        calc_total_price=total_price,
+        calc_applied_discounts=[],
+        calc_completed=False,
+    )
+    await state.set_state(DocumentUpload.waiting_for_specialty)
+    text = tr(
+        lang,
+        f"Специальность выбрана: {selected_specialty}\n"
+        f"Базовая стоимость: {year_price:,} ₸/год, {total_price:,} ₸ за 4 года.\n"
+        "Теперь выберите льготы в разделе «Льготы и расчет цены», чтобы получить итоговую стоимость.",
+        f"Мамандық таңдалды: {selected_specialty}\n"
+        f"Базалық құны: {year_price:,} ₸/жыл, {total_price:,} ₸ (4 жыл).\n"
+        "Енді соңғы бағаны алу үшін «Жеңілдік пен баға есебі» бөлімінде жеңілдіктерді таңдаңыз.",
+    ).replace(",", " ")
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        types.InlineKeyboardButton(
+            text=tr(lang, "💸 Льготы и расчет цены", "💸 Жеңілдік пен баға есебі"),
+            callback_data=CallbackData.CALC_START,
+        )
+    )
+    builder.row(types.InlineKeyboardButton(text=tr(lang, "🔙 К перечню", "🔙 Тізімге"), callback_data=CallbackData.DOCS))
+    await callback.message.edit_text(text, reply_markup=builder.as_markup())
+    await callback.answer()
 
 @router.message(DocumentUpload.waiting_for_diploma, F.photo | F.document)
 async def process_diploma(message: types.Message, state: FSMContext):

@@ -35,6 +35,7 @@ def _write_store(data: dict[str, list[dict[str, Any]]]) -> None:
 def add_pending_registration(record: dict[str, Any]) -> None:
     data = _read_store()
     record.setdefault("created_at", datetime.now(timezone.utc).isoformat())
+    record["status"] = "pending"
     phone = str(record.get("phone", ""))
     tg_user_id = record.get("tg_user_id")
     data["pending"] = [

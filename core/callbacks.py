@@ -46,6 +46,8 @@ class CallbackData:
     DOC_FILE_PREFIX = "doc_file_"
     DOC_CONSENT = "doc_consent"
     DOC_POLICY_INFO = "doc_policy_info"
+    DOC_FAC_PREFIX = "doc_fac_"
+    DOC_SPEC_PREFIX = "doc_spec_"
     HELP_MENU = "help_menu"
     HELP_PREFIX = "help_topic_"
     HELP_CONFIRM = "help_confirm"
