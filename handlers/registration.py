@@ -20,6 +20,7 @@ from services.registration_store import (
     add_pending_registration,
     approve_registration,
     deny_registration,
+    find_phone_owner,
     get_approved_user,
     get_pending_all,
     get_pending_by_tg_user_id,
@@ -27,7 +28,7 @@ from services.registration_store import (
     get_approved_all,
 )
 from utils.i18n import tr
-from utils.validators import format_phone, sanitize_text, validate_phone
+from utils.validators import normalize_phone, sanitize_text
 
 router = Router()
 PAGE_SIZE = 6
@@ -39,6 +40,13 @@ ROLE_BY_CALLBACK = {
     "role_worker": "Работник",
     "role_teacher": "Преподаватель",
 }
+
+
+def _safe_tg_id(value: object) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 async def _send_preview(target: types.Message | types.CallbackQuery, state: FSMContext):
@@ -156,21 +164,21 @@ async def process_fio(message: types.Message, state: FSMContext):
     await state.set_state(Form.phone)
 
 
-@router.message(Form.phone, F.contact)
-async def process_phone_contact(message: types.Message, state: FSMContext):
-    # Приоритетно обрабатываем contact payload от request_contact-кнопки.
-    await _process_phone_input(message, state)
-
-
 @router.message(Form.phone)
-async def process_phone_other(message: types.Message, state: FSMContext):
-    # Fallback для ручного ввода и нестандартных клиентов.
+async def process_phone_any(message: types.Message, state: FSMContext):
+    # Универсальный обработчик шага телефона: контакт + ручной ввод + Desktop fallback.
     await _process_phone_input(message, state)
 
 
 async def _process_phone_input(message: types.Message, state: FSMContext):
     data = await state.get_data()
     lang = data.get("locale", "ru")
+    logging.info(
+        "phone_step update: user_id=%s has_contact=%s text=%s",
+        message.from_user.id if message.from_user else "-",
+        bool(message.contact),
+        bool(message.text),
+    )
     raw_phone = ""
     if message.contact and message.contact.phone_number:
         if message.contact.user_id and int(message.contact.user_id) != int(message.from_user.id):
@@ -208,7 +216,8 @@ async def _process_phone_input(message: types.Message, state: FSMContext):
             reply_markup=rkb.get_phone_kb(lang),
         )
         return
-    if not validate_phone(raw_phone):
+    normalized_phone = normalize_phone(raw_phone)
+    if not normalized_phone:
         await message.answer(
             tr(
                 lang,
@@ -217,7 +226,17 @@ async def _process_phone_input(message: types.Message, state: FSMContext):
             )
         )
         return
-    normalized_phone = format_phone(raw_phone)
+    owner = find_phone_owner(normalized_phone)
+    if owner and _safe_tg_id(owner.get("tg_user_id")) not in {0, _safe_tg_id(message.from_user.id)}:
+        await message.answer(
+            tr(
+                lang,
+                "❌ Этот номер уже используется другим пользователем. Укажите свой актуальный номер.",
+                "❌ Бұл нөмір басқа пайдаланушыға тиесілі. Өз өзекті нөміріңізді енгізіңіз.",
+            ),
+            reply_markup=rkb.get_phone_kb(lang),
+        )
+        return
     await state.update_data(phone=normalized_phone)
     await message.answer(tr(lang, "✅ Номер принят.", "✅ Нөмір қабылданды."), reply_markup=ReplyKeyboardRemove())
     await message.answer(
@@ -392,7 +411,12 @@ async def confirm_registration(callback: types.CallbackQuery, state: FSMContext)
     lang = user_data.get("locale", "ru")
     add_pending_registration(user_data)
     user_data["status"] = "pending"
-    upsert_registration_account_record(user_data)
+    pending_card = get_pending_by_tg_user_id(callback.from_user.id) or {}
+    if pending_card:
+        user_data["submit_attempt"] = int(pending_card.get("submit_attempt", 1) or 1)
+    excel_result = upsert_registration_account_record(user_data)
+    user_data["excel_account_saved"] = bool(excel_result.get("ok"))
+    user_data["excel_account_was_existing"] = bool(excel_result.get("was_existing"))
     await notify_responsible_new_registration(callback.bot, user_data)
     text = (
         "✅ Заявка отправлена. Ожидайте, с вами свяжется ответственный менеджер."
@@ -561,7 +585,7 @@ async def review_action(callback: types.CallbackQuery, state: FSMContext):
         append_audit_event(
             "registration_approved",
             callback.from_user.id,
-            {"phone": phone, "tg_user_id": approved.get("tg_user_id")},
+            {"phone": phone_value, "tg_user_id": approved.get("tg_user_id")},
         )
         await callback.message.edit_text("✅ Заявка одобрена.")
     elif action == "deny":
@@ -577,7 +601,7 @@ async def review_action(callback: types.CallbackQuery, state: FSMContext):
         append_audit_event(
             "registration_denied",
             callback.from_user.id,
-            {"phone": phone, "tg_user_id": denied.get("tg_user_id")},
+            {"phone": phone_value, "tg_user_id": denied.get("tg_user_id")},
         )
         await callback.message.edit_text("❌ Заявка отклонена.")
     else:

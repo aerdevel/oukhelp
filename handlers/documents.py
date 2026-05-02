@@ -24,10 +24,10 @@ from services.audit_log import append_audit_event
 from services.documents_files import persist_documents_locally
 from services.excel_registry import upsert_applicant_record
 from services.notifier import send_documents_package_for_review
-from services.registration_store import get_approved_user
+from services.registration_store import find_phone_owner, get_approved_user
 from services.calculator import calculate_tuition
 from utils.i18n import tr
-from utils.validators import format_phone, sanitize_text, validate_phone
+from utils.validators import normalize_phone, sanitize_text, validate_phone
 
 router = Router()
 REVIEW_CHAT_ID = settings.moderation_chat_id
@@ -38,6 +38,13 @@ DOC_KEY_BY_CODE = {
     "med": ("medical_075", "Мед. справка 075/у"),
     "ent": ("ent_certificate", "Сертификат ЕНТ"),
 }
+
+
+def _safe_tg_id(value: object) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _extract_file_info(message: types.Message) -> dict[str, str]:
@@ -158,7 +165,7 @@ async def start_upload(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
-    await state.update_data(fio=fio, phone=format_phone(phone))
+    await state.update_data(fio=fio, phone=normalize_phone(phone) or phone)
     admission_specialty = data.get("admission_specialty") or data.get("calc_specialty")
     if not admission_specialty:
         await state.set_state(DocumentUpload.waiting_for_faculty)
@@ -230,15 +237,16 @@ async def docs_collect_fio(message: types.Message, state: FSMContext):
     )
 
 
-@router.message(DocumentUpload.waiting_for_phone, F.contact)
-async def docs_collect_phone_contact(message: types.Message, state: FSMContext):
-    await docs_collect_phone_common(message, state)
-
-
 @router.message(DocumentUpload.waiting_for_phone)
 async def docs_collect_phone_common(message: types.Message, state: FSMContext):
     data = await state.get_data()
     lang = data.get("locale", "ru")
+    logging.info(
+        "docs_phone_step update: user_id=%s has_contact=%s text=%s",
+        message.from_user.id if message.from_user else "-",
+        bool(message.contact),
+        bool(message.text),
+    )
     if message.contact and message.contact.user_id and int(message.contact.user_id) != int(message.from_user.id):
         await message.answer(
             tr(
@@ -260,7 +268,8 @@ async def docs_collect_phone_common(message: types.Message, state: FSMContext):
             reply_markup=rkb.get_phone_kb(lang),
         )
         return
-    if not validate_phone(raw_phone):
+    normalized_phone = normalize_phone(str(raw_phone))
+    if not normalized_phone:
         await message.answer(
             tr(
                 lang,
@@ -269,7 +278,17 @@ async def docs_collect_phone_common(message: types.Message, state: FSMContext):
             )
         )
         return
-    normalized_phone = format_phone(raw_phone)
+    owner = find_phone_owner(normalized_phone)
+    if owner and _safe_tg_id(owner.get("tg_user_id")) not in {0, _safe_tg_id(message.from_user.id)}:
+        await message.answer(
+            tr(
+                lang,
+                "❌ Этот номер уже используется другим пользователем. Укажите свой актуальный номер.",
+                "❌ Бұл нөмір басқа пайдаланушыға тиесілі. Өз өзекті нөміріңізді енгізіңіз.",
+            ),
+            reply_markup=rkb.get_phone_kb(lang),
+        )
+        return
     await state.update_data(phone=normalized_phone)
     await state.set_state(DocumentUpload.waiting_for_faculty)
     await message.answer(tr(lang, "✅ Номер принят.", "✅ Нөмір қабылданды."), reply_markup=ReplyKeyboardRemove())
@@ -505,9 +524,13 @@ async def finalize_documents(callback: types.CallbackQuery, state: FSMContext):
     await persist_documents_locally(callback.bot, package)
     # Сохраняем пакет уже после обогащения local_path, чтобы пути не терялись при последующих апдейтах.
     add_pending_package(package)
+    stored_pending = get_package_for_review(callback.from_user.id) or {}
+    package["submit_attempt"] = int(stored_pending.get("submit_attempt", 1) or 1)
     # Сразу фиксируем запись в реестре как pending, чтобы приемная видела ФИО/телефон до решения.
     package["review_status"] = "pending"
-    upsert_applicant_record(package)
+    excel_result = upsert_applicant_record(package)
+    package["excel_applicant_saved"] = bool(excel_result.get("ok"))
+    package["excel_applicant_was_existing"] = bool(excel_result.get("was_existing"))
     await send_documents_package_for_review(callback.bot, package)
     
     success_text = tr(

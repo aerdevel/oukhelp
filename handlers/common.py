@@ -608,7 +608,13 @@ async def support_delete_confirm(callback: types.CallbackQuery):
     await callback.answer()
 
 
-@router.message(F.reply_to_message)
+@router.message(
+    F.reply_to_message,
+    lambda message: int(message.chat.id) in {
+        int(settings.psycholog_chat_id),
+        int(settings.moderation_chat_id),
+    },
+)
 async def psy_staff_reply(message: types.Message):
     reply_to = message.reply_to_message
     if not reply_to:

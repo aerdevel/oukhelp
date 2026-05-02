@@ -29,6 +29,9 @@ async def notify_responsible_new_registration(bot: Bot, user_data: dict):
     tg_user_id = user_data.get("tg_user_id")
     tg_username = user_data.get("tg_username")
     telegram_name = await _resolve_telegram_name(bot, user_data)
+    submit_attempt = int(user_data.get("submit_attempt", 1) or 1)
+    excel_prev_icon = "✅" if bool(user_data.get("excel_account_was_existing")) else "❌"
+    excel_write_icon = "✅" if bool(user_data.get("excel_account_saved")) else "❌"
     
     # Определение всех получателей уведомления по группе.
     target_chat_ids = get_responsible_ids(group or "-", specialty)
@@ -42,6 +45,9 @@ async def notify_responsible_new_registration(bot: Bot, user_data: dict):
         f"🔗 Username: {username_text}\n"
         f"📋 ФИО: {user_data.get('fio')}\n"
         f"📞 Тел: {user_phone}\n"
+        f"🔁 Попытка заявки: #{submit_attempt}\n"
+        f"📒 Excel ранее: {excel_prev_icon}\n"
+        f"💾 Excel запись: {excel_write_icon}\n"
         f"🎭 Статус: {role}\n"
         f"🏛 Кафедра: {user_data.get('faculty', '-')}\n"
         f"📖 Спец: {user_data.get('specialty', '-')}\n"
@@ -121,10 +127,16 @@ async def send_documents_package_for_review(bot: Bot, package: dict):
     review_chat_id = settings.moderation_chat_id
     username_text = f"@{package.get('tg_username')}" if package.get("tg_username") else "-"
     tg_user_id = package["tg_user_id"]
+    submit_attempt = int(package.get("submit_attempt", 1) or 1)
+    excel_prev_icon = "✅" if bool(package.get("excel_applicant_was_existing")) else "❌"
+    excel_write_icon = "✅" if bool(package.get("excel_applicant_saved")) else "❌"
     applied_discounts = package.get("calc_applied_discounts") or []
     discounts_text = ", ".join(str(item) for item in applied_discounts) if applied_discounts else "-"
     summary = (
         "📦 Новый пакет документов\n\n"
+        f"🔁 Попытка отправки перечня: #{submit_attempt}\n"
+        f"📒 Excel ранее: {excel_prev_icon}\n"
+        f"💾 Excel запись: {excel_write_icon}\n"
         f"👤 ФИО: {package.get('fio', '-')}\n"
         f"📞 Телефон: {package.get('phone', '-')}\n"
         f"🆔 Telegram ID: {tg_user_id}\n"
@@ -141,4 +153,20 @@ async def send_documents_package_for_review(bot: Bot, package: dict):
         "Нажмите на нужный документ в кнопках ниже, чтобы открыть его прямо в чате."
     )
     kb = get_documents_review_kb(tg_user_id)
-    await bot.send_message(review_chat_id, summary, reply_markup=kb)
+    try:
+        await bot.send_message(review_chat_id, summary, reply_markup=kb)
+    except Exception as err:
+        logging.exception("Ошибка отправки пакета в чат модерации %s: %s", review_chat_id, err)
+        try:
+            await bot.send_message(
+                settings.admin_id,
+                (
+                    "⚠️ Не удалось отправить пакет в чат модерации\n"
+                    f"🆔 Пользователь: {tg_user_id}\n"
+                    f"📞 Телефон: {mask_phone(str(package.get('phone', '')))}\n"
+                    f"🔗 Username: {mask_username(str(package.get('tg_username', '')))}\n"
+                    f"📨 Чат: {review_chat_id}"
+                ),
+            )
+        except Exception as fallback_err:
+            logging.exception("Ошибка резервного уведомления админу: %s", fallback_err)

@@ -112,6 +112,16 @@ def _save_workbook_with_retry(wb, main_path: Path, fallback_path: Path) -> str:
     return str(fallback_path)
 
 
+def _save_result(path: str, was_existing: bool) -> dict[str, Any]:
+    target = str(Path(path))
+    return {
+        "ok": True,
+        "path": target,
+        "is_fallback": target in {str(FALLBACK_REGISTRY_PATH), str(FALLBACK_ACCOUNTS_PATH)},
+        "was_existing": was_existing,
+    }
+
+
 def _find_row_by_tg_id(ws, tg_user_id: int) -> int | None:
     for row in range(2, ws.max_row + 1):
         if str(ws.cell(row=row, column=1).value or "") == str(tg_user_id):
@@ -142,11 +152,12 @@ def _doc_status(package: dict[str, Any], doc_key: str) -> str:
     return "Загружен (фото, путь не сохранен)" if kind == "photo" else "Загружен (документ, путь не сохранен)"
 
 
-def upsert_applicant_record(package: dict[str, Any]) -> str:
+def upsert_applicant_record(package: dict[str, Any]) -> dict[str, Any]:
     wb, ws = _open_sheet(REGISTRY_PATH, HEADERS)
     try:
         tg_user_id = int(package["tg_user_id"])
         row_idx = _find_row_by_tg_id(ws, tg_user_id)
+        was_existing = row_idx is not None
         if row_idx is None:
             row_idx = ws.max_row + 1
 
@@ -179,16 +190,18 @@ def upsert_applicant_record(package: dict[str, Any]) -> str:
         ]
         for col_idx, value in enumerate(values, start=1):
             ws.cell(row=row_idx, column=col_idx, value=value)
-        return _save_workbook_with_retry(wb, REGISTRY_PATH, FALLBACK_REGISTRY_PATH)
+        saved_path = _save_workbook_with_retry(wb, REGISTRY_PATH, FALLBACK_REGISTRY_PATH)
+        return _save_result(saved_path, was_existing=was_existing)
     finally:
         wb.close()
 
 
-def upsert_registration_account_record(record: dict[str, Any]) -> str:
+def upsert_registration_account_record(record: dict[str, Any]) -> dict[str, Any]:
     wb, ws = _open_sheet(ACCOUNTS_PATH, ACCOUNT_HEADERS)
     try:
         tg_user_id = int(record["tg_user_id"])
         row_idx = _find_row_by_tg_id(ws, tg_user_id)
+        was_existing = row_idx is not None
         if row_idx is None:
             row_idx = ws.max_row + 1
 
@@ -209,6 +222,7 @@ def upsert_registration_account_record(record: dict[str, Any]) -> str:
         ]
         for col_idx, value in enumerate(values, start=1):
             ws.cell(row=row_idx, column=col_idx, value=value)
-        return _save_workbook_with_retry(wb, ACCOUNTS_PATH, FALLBACK_ACCOUNTS_PATH)
+        saved_path = _save_workbook_with_retry(wb, ACCOUNTS_PATH, FALLBACK_ACCOUNTS_PATH)
+        return _save_result(saved_path, was_existing=was_existing)
     finally:
         wb.close()

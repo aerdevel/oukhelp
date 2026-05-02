@@ -35,6 +35,14 @@ def format_phone(phone: str) -> str:
         
     return phone
 
+
+def normalize_phone(phone: str) -> str | None:
+    """Возвращает номер в формате +7XXXXXXXXXX или None, если номер невалиден."""
+    if not validate_phone(phone):
+        return None
+    return format_phone(phone)
+
+
 def sanitize_text(text: str) -> str:
     """Базовая санитизация: trim и ограничение длины для пользовательского ввода."""
     if not text:

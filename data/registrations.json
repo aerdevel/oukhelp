@@ -21,6 +21,24 @@
     {
       "created_at": "2026-04-29T17:15:15.634057+00:00",
       "status": "pending"
+    },
+    {
+      "action_kb_initialized": true,
+      "locale": "ru",
+      "current_choice": "Университет",
+      "tg_user_id": 5394280567,
+      "tg_full_name": "Pawa Dura",
+      "tg_username": "spisoq",
+      "fio": "3tt3t3t3t",
+      "phone": "+77004287470",
+      "role": "Выпускник",
+      "faculty": "Инженерные технологии",
+      "specialty": "6B11380 - Вычислительная техника и программное обеспечение",
+      "course": "-",
+      "group": "vtpo 25-",
+      "created_at": "2026-05-02T13:36:07.658990+00:00",
+      "status": "pending",
+      "submit_attempt": 1
     }
   ],
   "approved": [

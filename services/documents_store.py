@@ -32,10 +32,23 @@ def _write_store(data: dict[str, dict[str, Any]]) -> None:
     write_json(STORE_PATH, data)
 
 
+def _next_submit_attempt(data: dict[str, dict[str, Any]], tg_user_id: int) -> int:
+    user_key = str(tg_user_id)
+    current_max = 0
+    for bucket in ("pending", "approved", "denied"):
+        row = data.get(bucket, {}).get(user_key)
+        if not row:
+            continue
+        attempt = int(row.get("submit_attempt", 0) or 0)
+        current_max = max(current_max, attempt)
+    return current_max + 1
+
+
 def add_pending_package(package: dict[str, Any]) -> None:
     data = _read_store()
     package.setdefault("created_at", datetime.now(timezone.utc).isoformat())
     user_key = str(package["tg_user_id"])
+    package["submit_attempt"] = _next_submit_attempt(data, int(package["tg_user_id"]))
     data["pending"][user_key] = package
     _write_store(data)
 
