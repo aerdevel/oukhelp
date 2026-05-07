@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Any
 
 from core.config import settings
-from core.resources.text_file.catalog import SPECIALTIES_BY_DEPARTMENT
+from core.resources.text_file.catalog import SPECIALTIES_BY_TRACK, get_all_specialties as catalog_get_all_specialties
 from utils.file_utils import read_json, write_json
 
 
@@ -17,6 +17,7 @@ def _default_payload() -> dict[str, Any]:
         str(int(settings.admin_id)): {
             "can_notify": True,
             "can_review": True,
+            "faculties": [ALL_GROUPS],
             "groups": [ALL_GROUPS],
             "specialties": [ALL_GROUPS],
             "is_admin": True,
@@ -24,6 +25,7 @@ def _default_payload() -> dict[str, Any]:
         str(int(settings.priemka_id)): {
             "can_notify": True,
             "can_review": True,
+            "faculties": [ALL_GROUPS],
             "groups": [ALL_GROUPS],
             "specialties": [ALL_GROUPS],
             "is_admin": False,
@@ -46,6 +48,7 @@ def _read_store() -> dict[str, Any]:
     for profile in data["users"].values():
         profile.setdefault("can_notify", False)
         profile.setdefault("can_review", False)
+        profile.setdefault("faculties", [])
         profile.setdefault("groups", [])
         profile.setdefault("specialties", list(profile.get("groups", [])))
         profile.setdefault("is_admin", False)
@@ -70,7 +73,7 @@ def ensure_user(user_id: int) -> dict[str, Any]:
     users = data["users"]
     profile = users.get(str(user_id))
     if profile is None:
-        profile = {"can_notify": False, "can_review": False, "groups": [], "specialties": [], "is_admin": False}
+        profile = {"can_notify": False, "can_review": False, "faculties": [], "groups": [], "specialties": [], "is_admin": False}
         users[str(user_id)] = profile
         _write_store(data)
     return profile
@@ -84,6 +87,7 @@ def set_user_permissions(
     can_review: bool | None = None,
     groups: list[str] | None = None,
     specialties: list[str] | None = None,
+    faculties: list[str] | None = None,
     is_admin_flag: bool | None = None,
 ) -> None:
     if not is_admin(actor_id):
@@ -91,7 +95,7 @@ def set_user_permissions(
     data = _read_store()
     profile = data["users"].get(
         str(target_user_id),
-        {"can_notify": False, "can_review": False, "groups": [], "specialties": [], "is_admin": False},
+        {"can_notify": False, "can_review": False, "faculties": [], "groups": [], "specialties": [], "is_admin": False},
     )
     if can_notify is not None:
         profile["can_notify"] = bool(can_notify)
@@ -103,6 +107,9 @@ def set_user_permissions(
     if specialties is not None:
         normalized = [spec.strip() for spec in specialties if spec.strip()]
         profile["specialties"] = normalized
+    if faculties is not None:
+        normalized = [fac.strip() for fac in faculties if fac.strip()]
+        profile["faculties"] = normalized
     if is_admin_flag is not None:
         profile["is_admin"] = bool(is_admin_flag)
     data["users"][str(target_user_id)] = profile
@@ -114,6 +121,7 @@ def get_user_permissions(user_id: int) -> dict[str, Any]:
     return {
         "can_notify": bool(profile.get("can_notify")),
         "can_review": bool(profile.get("can_review")),
+        "faculties": list(profile.get("faculties", [])),
         "groups": list(profile.get("groups", [])),
         "specialties": list(profile.get("specialties", profile.get("groups", []))),
         "is_admin": bool(profile.get("is_admin")),
@@ -132,6 +140,10 @@ def can_notify(user_id: int, group: str, specialty: str | None = None) -> bool:
     # Новый контур: сначала фильтрация по специальности, затем fallback по группе.
     if specialty and _has_access(profile, "specialties", specialty):
         return True
+    if specialty:
+        faculty = faculty_by_specialty(specialty)
+        if faculty and _has_access(profile, "faculties", faculty):
+            return True
     return _has_access(profile, "groups", group)
 
 
@@ -141,6 +153,10 @@ def can_review(user_id: int, group: str, specialty: str | None = None) -> bool:
         return False
     if specialty and _has_access(profile, "specialties", specialty):
         return True
+    if specialty:
+        faculty = faculty_by_specialty(specialty)
+        if faculty and _has_access(profile, "faculties", faculty):
+            return True
     return _has_access(profile, "groups", group)
 
 
@@ -153,6 +169,11 @@ def get_notification_receivers(group: str, specialty: str | None = None) -> list
         if specialty and _has_access(profile, "specialties", specialty):
             receivers.append(int(raw_user_id))
             continue
+        if specialty:
+            faculty = faculty_by_specialty(specialty)
+            if faculty and _has_access(profile, "faculties", faculty):
+                receivers.append(int(raw_user_id))
+                continue
         if _has_access(profile, "groups", group):
             receivers.append(int(raw_user_id))
     if not receivers:
@@ -169,6 +190,28 @@ def list_managers() -> list[tuple[int, dict[str, Any]]]:
     return sorted(items, key=lambda row: row[0])
 
 
-def get_all_specialties(lang: str = "ru") -> list[str]:
-    departments = SPECIALTIES_BY_DEPARTMENT.get(lang, {})
-    return [spec for specs in departments.values() for spec in specs]
+def get_all_specialties(lang: str = "ru", track: str | None = None) -> list[str]:
+    if track in {"uni", "college"}:
+        return sorted(set(catalog_get_all_specialties(lang, track)))
+    merged = set(catalog_get_all_specialties(lang, "uni"))
+    merged.update(catalog_get_all_specialties(lang, "college"))
+    return sorted(merged)
+
+
+def get_all_faculties(lang: str = "ru") -> list[str]:
+    values: set[str] = set()
+    for track_map in SPECIALTIES_BY_TRACK.values():
+        values.update(track_map.get(lang, {}).keys())
+    return sorted(values)
+
+
+def faculty_by_specialty(specialty: str) -> str | None:
+    needle = str(specialty).strip()
+    if not needle:
+        return None
+    for track_map in SPECIALTIES_BY_TRACK.values():
+        for departments in track_map.values():
+            for faculty, specs in departments.items():
+                if needle in specs:
+                    return faculty
+    return None

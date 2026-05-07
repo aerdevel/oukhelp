@@ -1,3 +1,5 @@
+import re
+
 from aiogram import Bot, F, Router, types
 from aiogram.exceptions import TelegramMigrateToChat
 from aiogram.filters import Command
@@ -14,15 +16,23 @@ from services.access_control import is_admin
 from services.registration_store import get_approved_user
 from services.status import build_applicant_status_text, build_moderation_queue_text
 from services.support_tickets import (
+    assign_ticket,
     append_staff_payload,
+    build_staff_performance,
     append_user_payload,
     block_actor_by_ticket,
+    unblock_actor_by_ticket,
+    unblock_actor_by_key,
     close_ticket,
     get_ticket,
     get_ticket_by_chat_message,
     is_actor_blocked,
     link_chat_message,
     open_or_get_ticket,
+    list_blocked_actors,
+    list_staff_registry,
+    register_staff_profile,
+    set_ticket_assignees,
     set_ticket_rating,
     set_ticket_rating_comment,
     ticket_message_refs,
@@ -37,6 +47,90 @@ from utils.i18n import tr
 router = Router()
 def _can_manage_support(from_user_id: int) -> bool:
     return bool(is_admin(from_user_id) or is_responsible_user(from_user_id))
+
+
+def _staff_label(staff_id: int, profile: dict[str, str]) -> str:
+    username = str((profile or {}).get("username", "")).strip()
+    full_name = str((profile or {}).get("full_name", "")).strip()
+    if username and full_name:
+        return f"{full_name} (@{username})"
+    if username:
+        return f"@{username}"
+    return full_name or f"ID {staff_id}"
+
+
+def _format_assignees(ticket: dict[str, object]) -> str:
+    raw = ticket.get("assigned_staff_ids") or []
+    ids: list[int] = []
+    if isinstance(raw, list):
+        for x in raw:
+            try:
+                ids.append(int(x))
+            except Exception:
+                continue
+    else:
+        try:
+            ids = [int(ticket.get("assigned_staff_id") or 0)]
+        except Exception:
+            ids = []
+    ids = [x for x in ids if x > 0]
+    if not ids:
+        return "не назначены"
+    profiles = ticket.get("staff_profiles") or {}
+    labels: list[str] = []
+    for sid in ids:
+        profile = {}
+        if isinstance(profiles, dict):
+            profile = profiles.get(str(sid), {}) or {}
+        labels.append(_staff_label(int(sid), profile))
+    return ", ".join(labels)
+
+
+async def _render_assign_kb(
+    bot: Bot,
+    *,
+    chat_id: int,
+    message_id: int,
+    ticket_id: str,
+    rows: list[tuple[int, dict[str, str]]],
+    selected: set[int],
+    header: str | None = None,
+) -> None:
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+    builder = InlineKeyboardBuilder()
+    for staff_id, profile in rows[:25]:
+        mark = "✅ " if int(staff_id) in selected else ""
+        builder.row(
+            types.InlineKeyboardButton(
+                text=f"{mark}{_staff_label(int(staff_id), profile)}",
+                callback_data=f"{CallbackData.SUPPORT_ASSIGN_PICK_PREFIX}{ticket_id}_{int(staff_id)}",
+            )
+        )
+    builder.row(
+        types.InlineKeyboardButton(
+            text="✅ Готово",
+            callback_data=f"{CallbackData.SUPPORT_ASSIGN_APPLY_PREFIX}{ticket_id}",
+        )
+    )
+    text = header or f"Выберите психологов для тикета #{ticket_id} (можно несколько):"
+    await bot.edit_message_text(
+        chat_id=int(chat_id),
+        message_id=int(message_id),
+        text=text,
+        reply_markup=builder.as_markup(),
+    )
+
+
+def _is_psy_admin(user_id: int) -> bool:
+    return bool(is_admin(user_id) or (settings.psycholog_admin_id is not None and int(user_id) == int(settings.psycholog_admin_id)))
+
+
+def _configured_support_chat_ids() -> set[int]:
+    chat_ids: set[int] = {int(settings.moderation_chat_id)}
+    if settings.psycholog_chat_id is not None:
+        chat_ids.add(int(settings.psycholog_chat_id))
+    return chat_ids
 
 
 
@@ -57,6 +151,18 @@ def _support_target_chat(topic_code: str) -> int | None:
     return None
 
 
+def _ticket_id_from_text(text: str) -> str:
+    """Пытается извлечь ID тикета из текста служебного сообщения."""
+    raw = str(text or "")
+    match = re.search(r"#ticket_(\d+)", raw)
+    if match:
+        return match.group(1)
+    match = re.search(r"Тикет\s*#(\d+)", raw)
+    if match:
+        return match.group(1)
+    return ""
+
+
 def _ticket_search_tags(ticket: dict) -> tuple[str, str]:
     ticket_tag = f"#ticket_{ticket['ticket_id']}"
     if ticket.get("anonymous"):
@@ -64,6 +170,53 @@ def _ticket_search_tags(ticket: dict) -> tuple[str, str]:
     else:
         actor_tag = f"#user_{ticket['user_id']}"
     return ticket_tag, actor_tag
+
+
+def _normalize_ticket_id(raw: str) -> str:
+    value = str(raw or "").strip()
+    if value.startswith("#ticket_"):
+        return value.replace("#ticket_", "", 1)
+    if value.startswith("ticket_"):
+        return value.replace("ticket_", "", 1)
+    if value.startswith("#"):
+        return value[1:]
+    if not value.isdigit():
+        digits = "".join(ch for ch in value if ch.isdigit())
+        if digits:
+            return digits
+    return value
+
+
+def _resolve_existing_ticket_id(raw: str) -> str:
+    """Надежно резолвит ticket_id для разных форматов (legacy + prefixed)."""
+    candidates: list[str] = []
+    source = str(raw or "").strip()
+    normalized = _normalize_ticket_id(source)
+    for item in (source, normalized):
+        if item and item not in candidates:
+            candidates.append(item)
+    if normalized:
+        prefixed = f"ticket_{normalized}"
+        hash_prefixed = f"#ticket_{normalized}"
+        if prefixed not in candidates:
+            candidates.append(prefixed)
+        if hash_prefixed not in candidates:
+            candidates.append(hash_prefixed)
+    for candidate in candidates:
+        found = get_ticket(candidate)
+        if found:
+            # Всегда возвращаем канонический ID из стора (обычно чистые цифры),
+            # чтобы не размножать форматы вроде apply_10014 / ticket_10014.
+            return str(found.get("ticket_id") or normalized)
+    return normalized
+
+
+def _help_back_callback(state_data: dict) -> str:
+    return CallbackData.LEVEL_COLL if state_data.get("admission_track") == "college" or state_data.get("current_choice") == "Колледж" else CallbackData.LEVEL_UNI
+
+
+def _is_college_context(state_data: dict) -> bool:
+    return state_data.get("admission_track") == "college" or state_data.get("current_choice") == "Колледж"
 
 
 async def _send_to_support_chat_with_migration(
@@ -123,7 +276,7 @@ async def uni_menu(callback: types.CallbackQuery, state: FSMContext):
         # Выход из режима ввода сообщений психологу без закрытия тикета.
         await state.set_state(None)
     
-    await state.update_data(current_choice="Университет")
+    await state.update_data(current_choice="Университет", admission_track="uni")
     
     text = MESSAGES[lang]["main_menu"]
     approved_profile = get_approved_user(callback.from_user.id)
@@ -137,17 +290,17 @@ async def uni_menu(callback: types.CallbackQuery, state: FSMContext):
             is_responsible=reviewer,
         ),
     )
-    if not data.get("action_kb_initialized", False):
-        await callback.message.answer(
-            _keyboard_anchor_text(lang),
-            reply_markup=rkb.get_main_action_kb(
-                lang,
-                is_registered=approved_profile is not None,
-                is_reviewer=reviewer,
-                is_admin=admin,
-            ),
-        )
-        await state.update_data(action_kb_initialized=True)
+    await callback.message.answer(
+        _keyboard_anchor_text(lang),
+        reply_markup=rkb.get_main_action_kb(
+            lang,
+            is_registered=approved_profile is not None,
+            is_reviewer=reviewer,
+            is_admin=admin,
+            is_psy_admin=_is_psy_admin(callback.from_user.id),
+        ),
+    )
+    await state.update_data(action_kb_initialized=True)
     await callback.answer()
 
 
@@ -160,18 +313,22 @@ async def main_menu_text(message: types.Message, state: FSMContext):
     approved_profile = get_approved_user(message.from_user.id)
     reviewer = is_responsible_user(message.from_user.id)
     admin = is_admin(message.from_user.id)
-    await message.answer(MESSAGES[lang]["main_menu"], reply_markup=ikb.get_uni_menu(lang))
-    if not data.get("action_kb_initialized", False):
-        await message.answer(
-            _keyboard_anchor_text(lang),
-            reply_markup=rkb.get_main_action_kb(
-                lang,
-                is_registered=approved_profile is not None,
-                is_reviewer=reviewer,
-                is_admin=admin,
-            ),
-        )
-        await state.update_data(action_kb_initialized=True)
+    is_college = data.get("admission_track") == "college" or data.get("current_choice") == "Колледж"
+    await message.answer(
+        MESSAGES[lang]["college_menu"] if is_college else MESSAGES[lang]["main_menu"],
+        reply_markup=ikb.get_college_menu(lang) if is_college else ikb.get_uni_menu(lang),
+    )
+    await message.answer(
+        _keyboard_anchor_text(lang),
+        reply_markup=rkb.get_main_action_kb(
+            lang,
+            is_registered=approved_profile is not None,
+            is_reviewer=reviewer,
+            is_admin=admin,
+            is_psy_admin=_is_psy_admin(message.from_user.id),
+        ),
+    )
+    await state.update_data(action_kb_initialized=True)
 
 
 @router.message(F.text.in_(["🎓 Выбор уровня", "🎓 Деңгей таңдау"]))
@@ -195,7 +352,14 @@ async def help_menu_text(message: types.Message, state: FSMContext):
             "Көмек бөлімін таңдаңыз. Байланысу үшін қажетті батырманы басыңыз:",
         )
     )
-    await message.answer(title, reply_markup=ikb.get_help_menu_kb(lang))
+    await message.answer(
+        title,
+        reply_markup=ikb.get_help_menu_kb(
+            lang,
+            back_callback=_help_back_callback(data),
+            track="college" if _is_college_context(data) else "uni",
+        ),
+    )
 
 
 @router.callback_query(F.data.startswith(CallbackData.HELP_PREFIX))
@@ -203,19 +367,18 @@ async def help_option(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     lang = data.get("locale", "ru")
     code = callback.data.replace(CallbackData.HELP_PREFIX, "")
+    is_college = _is_college_context(data)
     labels = {
         "ru": {
             "tech": "Техническая поддержка",
             "psy": "Психологическая поддержка",
-            "faq": "Часто задаваемые вопросы",
-            "uni": "Вопрос университету",
+            "uni": "Вопрос колледжу" if is_college else "Вопрос университету",
             "book": "Книга жалоб и предложений",
         },
         "kz": {
             "tech": "Техникалық қолдау",
             "psy": "Психологиялық қолдау",
-            "faq": "Жиі қойылатын сұрақтар",
-            "uni": "Университетке сұрақ",
+            "uni": "Колледжге сұрақ" if is_college else "Университетке сұрақ",
             "book": "Шағымдар мен ұсыныстар кітабы",
         },
     }
@@ -237,25 +400,38 @@ async def help_option(callback: types.CallbackQuery, state: FSMContext):
                 f"Тикет #{ticket['ticket_id']}.\n"
                 "Осы чатқа хабарлама жазыңыз. Мәзірге шыға аласыз, тикет ашық қалады.",
             ),
-            reply_markup=ikb.get_psy_ticket_kb(ticket["ticket_id"], lang),
+            reply_markup=ikb.get_psy_ticket_kb(ticket["ticket_id"], lang, menu_callback=_help_back_callback(data)),
         )
         await callback.answer(tr(lang, "Психологический тикет открыт.", "Психологиялық тикет ашылды."))
         return
     if code == "uni":
-        ticket = open_or_get_ticket(callback.from_user.id, "uni", anonymous=False)
-        await state.update_data(support_ticket_id=ticket["ticket_id"], help_topic_code="uni")
-        await state.set_state(HelpRequest.waiting_for_text)
+        if is_college:
+            await callback.message.answer(
+                tr(
+                    lang,
+                    "🏫 Вопросы по колледжу:\n"
+                    "Тел.: +7 (7242) 24-84-25, +7 (7242) 24-60-47\n"
+                    "Instagram: @kzo_college\n"
+                    "Telegram: @kzo_college_bot\n"
+                    "Сайт: kvmk.kz",
+                    "🏫 Колледж бойынша сұрақтар:\n"
+                    "Тел.: +7 (7242) 24-84-25, +7 (7242) 24-60-47\n"
+                    "Instagram: @kzo_college\n"
+                    "Telegram: @kzo_college_bot\n"
+                    "Сайт: kvmk.kz",
+                ),
+            )
+            await callback.answer(tr(lang, "Контакты колледжа отправлены.", "Колледж байланыстары жіберілді."))
+            return
         await callback.message.answer(
             tr(
                 lang,
-                f"🎓 Чат с приемной комиссией открыт.\nТикет #{ticket['ticket_id']}.\n"
-                "Напишите сообщение. Можно выйти в меню, тикет останется активным.",
-                f"🎓 Қабылдау комиссиясымен чат ашылды.\nТикет #{ticket['ticket_id']}.\n"
-                "Хабарлама жазыңыз. Мәзірге шықсаңыз да, тикет ашық қалады.",
+                "🎓 Для официальных обращений используйте блог ректора университета.",
+                "🎓 Ресми өтініштер үшін университет ректорының блогын пайдаланыңыз.",
             ),
-            reply_markup=ikb.get_psy_ticket_kb(ticket["ticket_id"], lang),
+            reply_markup=ikb.get_rector_blog_kb(lang, back_callback=_help_back_callback(data)),
         )
-        await callback.answer(tr(lang, "Тикет в приемную открыт.", "Қабылдау комиссиясына тикет ашылды."))
+        await callback.answer(tr(lang, "Ссылка открыта.", "Сілтеме дайын."))
         return
     await state.update_data(help_topic=selected, help_topic_code=code)
     await state.set_state(HelpRequest.waiting_for_text)
@@ -348,7 +524,7 @@ async def help_collect_text(message: types.Message, state: FSMContext):
                 "✨ Сообщение отправлено психологам.\nОжидайте ответ.",
                 "✨ Хабарлама психологтарға жіберілді.\nЖауап күтіңіз.",
             ),
-            reply_markup=ikb.get_psy_ticket_kb(ticket["ticket_id"], lang),
+            reply_markup=ikb.get_psy_ticket_kb(ticket["ticket_id"], lang, menu_callback=_help_back_callback(data)),
         )
         return
 
@@ -436,6 +612,7 @@ async def psy_close_ticket(callback: types.CallbackQuery, state: FSMContext):
                 int(target_chat_id),
                 "✅ Тикет закрыт пользователем\n"
                 f"Тикет: #ticket_{ticket_id}\n"
+                f"Назначены: {_format_assignees(closed)}\n"
                 f"Итоговая статистика ответов: {format_staff_stats(closed)}",
             )
     await callback.message.edit_text(
@@ -531,22 +708,32 @@ async def psy_view_alias(callback: types.CallbackQuery):
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith(CallbackData.SUPPORT_BLOCK_PREFIX))
+@router.callback_query(
+    lambda callback: bool(getattr(callback, "data", ""))
+    and str(callback.data).startswith(CallbackData.SUPPORT_BLOCK_PREFIX)
+    and not str(callback.data).startswith(CallbackData.SUPPORT_BLOCK_CONFIRM_PREFIX)
+)
 async def support_block_prompt(callback: types.CallbackQuery):
     if not _can_manage_support(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     payload = callback.data.replace(CallbackData.SUPPORT_BLOCK_PREFIX, "")
     ticket_id, _, mode = payload.partition("_")
-    ticket = get_ticket(ticket_id)
+    ticket = get_ticket(ticket_id) or get_ticket(_ticket_id_from_text(str(getattr(callback.message, "text", "") or "")))
     if not ticket or ticket.get("topic_code") != "psy":
-        await callback.answer("Блокировка доступна только для анонимных психологических тикетов.", show_alert=True)
+        await callback.answer("Блокировка доступна только для психологических тикетов.", show_alert=True)
         return
     mode_label = "24 часа" if mode == "24h" else "навсегда"
-    await callback.message.answer(
-        f"Подтвердите блокировку анонима по тикету #{ticket_id} ({mode_label}).",
-        reply_markup=ikb.get_support_confirm_kb("block", payload),
-    )
+    try:
+        await callback.message.edit_text(
+            f"Подтвердите блокировку пользователя по тикету #{ticket_id} ({mode_label}).",
+            reply_markup=ikb.get_support_confirm_kb("block", payload),
+        )
+    except Exception:
+        await callback.message.answer(
+            f"Подтвердите блокировку пользователя по тикету #{ticket_id} ({mode_label}).",
+            reply_markup=ikb.get_support_confirm_kb("block", payload),
+        )
     await callback.answer()
 
 
@@ -565,24 +752,85 @@ async def support_block_confirm(callback: types.CallbackQuery):
     if not ticket:
         await callback.answer("Тикет не найден.", show_alert=True)
         return
-    await callback.message.answer(f"Аноним по тикету #{ticket_id} заблокирован ({mode}).")
+    try:
+        await callback.message.edit_text(f"Пользователь по тикету #{ticket_id} заблокирован ({mode}).")
+    except Exception:
+        await callback.message.answer(f"Пользователь по тикету #{ticket_id} заблокирован ({mode}).")
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith(CallbackData.SUPPORT_DELETE_PREFIX))
+@router.callback_query(
+    lambda callback: bool(getattr(callback, "data", ""))
+    and str(callback.data).startswith(CallbackData.SUPPORT_UNBLOCK_PREFIX)
+    and not str(callback.data).startswith(CallbackData.SUPPORT_UNBLOCK_CONFIRM_PREFIX)
+)
+async def support_unblock_prompt(callback: types.CallbackQuery):
+    if not _can_manage_support(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    ticket_id = callback.data.replace(CallbackData.SUPPORT_UNBLOCK_PREFIX, "")
+    ticket = get_ticket(ticket_id)
+    if not ticket or ticket.get("topic_code") != "psy":
+        await callback.answer("Разблокировка доступна только для психологических тикетов.", show_alert=True)
+        return
+    try:
+        await callback.message.edit_text(
+            f"Подтвердите разблокировку пользователя по тикету #{ticket_id}.",
+            reply_markup=ikb.get_support_confirm_kb("unblock", ticket_id),
+        )
+    except Exception:
+        await callback.message.answer(
+            f"Подтвердите разблокировку пользователя по тикету #{ticket_id}.",
+            reply_markup=ikb.get_support_confirm_kb("unblock", ticket_id),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith(CallbackData.SUPPORT_UNBLOCK_CONFIRM_PREFIX))
+async def support_unblock_confirm(callback: types.CallbackQuery):
+    if not _can_manage_support(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    payload = callback.data.replace(CallbackData.SUPPORT_UNBLOCK_CONFIRM_PREFIX, "")
+    decision, _, ticket_id = payload.partition("_")
+    if decision != "yes":
+        await callback.answer("Отменено.")
+        return
+    ticket = unblock_actor_by_ticket(ticket_id, callback.from_user.id)
+    if not ticket:
+        await callback.answer("Тикет не найден.", show_alert=True)
+        return
+    try:
+        await callback.message.edit_text(f"Пользователь по тикету #{ticket_id} разблокирован.")
+    except Exception:
+        await callback.message.answer(f"Пользователь по тикету #{ticket_id} разблокирован.")
+    await callback.answer()
+
+
+@router.callback_query(
+    lambda callback: bool(getattr(callback, "data", ""))
+    and str(callback.data).startswith(CallbackData.SUPPORT_DELETE_PREFIX)
+    and not str(callback.data).startswith(CallbackData.SUPPORT_DELETE_CONFIRM_PREFIX)
+)
 async def support_delete_prompt(callback: types.CallbackQuery):
     if not _can_manage_support(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     ticket_id = callback.data.replace(CallbackData.SUPPORT_DELETE_PREFIX, "")
-    ticket = get_ticket(ticket_id)
+    ticket = get_ticket(ticket_id) or get_ticket(_ticket_id_from_text(str(getattr(callback.message, "text", "") or "")))
     if not ticket:
         await callback.answer("Тикет не найден.", show_alert=True)
         return
-    await callback.message.answer(
-        f"Подтвердите удаление сообщений тикета #{ticket_id} в рабочих чатах.",
-        reply_markup=ikb.get_support_confirm_kb("delete", ticket_id),
-    )
+    try:
+        await callback.message.edit_text(
+            f"Подтвердите удаление сообщений тикета #{ticket_id} в рабочих чатах.",
+            reply_markup=ikb.get_support_confirm_kb("delete", ticket_id),
+        )
+    except Exception:
+        await callback.message.answer(
+            f"Подтвердите удаление сообщений тикета #{ticket_id} в рабочих чатах.",
+            reply_markup=ikb.get_support_confirm_kb("delete", ticket_id),
+        )
     await callback.answer()
 
 
@@ -596,6 +844,8 @@ async def support_delete_confirm(callback: types.CallbackQuery):
     if decision != "yes":
         await callback.answer("Отменено.")
         return
+    resolved = get_ticket(ticket_id) or get_ticket(_ticket_id_from_text(str(getattr(callback.message, "text", "") or "")))
+    ticket_id = str(resolved.get("ticket_id")) if resolved else ticket_id
     refs = ticket_message_refs(ticket_id)
     deleted = 0
     for row in refs:
@@ -604,16 +854,16 @@ async def support_delete_confirm(callback: types.CallbackQuery):
             deleted += 1
         except Exception:
             continue
-    await callback.message.answer(f"Удалено сообщений тикета #{ticket_id}: {deleted}.")
+    try:
+        await callback.message.edit_text(f"Удалено сообщений тикета #{ticket_id}: {deleted}.")
+    except Exception:
+        await callback.message.answer(f"Удалено сообщений тикета #{ticket_id}: {deleted}.")
     await callback.answer()
 
 
 @router.message(
     F.reply_to_message,
-    lambda message: int(message.chat.id) in {
-        int(settings.psycholog_chat_id),
-        int(settings.moderation_chat_id),
-    },
+    lambda message: int(message.chat.id) in _configured_support_chat_ids(),
 )
 async def psy_staff_reply(message: types.Message):
     reply_to = message.reply_to_message
@@ -625,6 +875,17 @@ async def psy_staff_reply(message: types.Message):
     target_chat_id = _support_target_chat(str(ticket.get("topic_code", "")))
     if target_chat_id is not None and int(message.chat.id) != int(target_chat_id):
         # Защита от случайного reply из нецелевого чата.
+        return
+    assigned_ids = ticket.get("assigned_staff_ids") or []
+    if isinstance(assigned_ids, list):
+        allowed = {int(x) for x in assigned_ids if str(x).isdigit() or isinstance(x, int)}
+    else:
+        allowed = set()
+    assigned_staff_id = int(ticket.get("assigned_staff_id") or 0)
+    if not allowed and assigned_staff_id:
+        allowed = {assigned_staff_id}
+    if allowed and int(message.from_user.id) not in allowed:
+        await message.answer("Этот тикет назначен другим психологам.")
         return
     if not is_ticket_message_supported(message):
         await message.answer("Этот тип ответа пока не поддерживается.")
@@ -639,6 +900,11 @@ async def psy_staff_reply(message: types.Message):
     )
     if not updated:
         return
+    register_staff_profile(
+        message.from_user.id,
+        username=message.from_user.username,
+        full_name=message.from_user.full_name,
+    )
     user_id = int(updated["user_id"])
     # Пользователь видит только чистый текст ответа без внутренних технических тегов.
     header = await message.bot.send_message(
@@ -664,19 +930,335 @@ async def psy_staff_reply(message: types.Message):
             await message.bot.send_message(user_id, "Получен ответ службы поддержки.")
     await message.answer("Ответ доставлен пользователю.")
 
+
+@router.message(
+    lambda message: settings.psycholog_chat_id is not None
+    and int(message.chat.id) == int(settings.psycholog_chat_id)
+    and not str(message.text or "").startswith("/")
+    and not ("Статистика психологов" in str(message.text or "") or "Психолог статистикасы" in str(message.text or ""))
+)
+async def sync_psycholog_chat_member(message: types.Message):
+    if not message.from_user or message.from_user.is_bot:
+        return
+    register_staff_profile(
+        message.from_user.id,
+        username=message.from_user.username,
+        full_name=message.from_user.full_name,
+    )
+    # Reply-клавиатуру для статистики не используем — команды надежнее.
+
+
+@router.message(Command("psy_kb"))
+async def psy_kb(message: types.Message):
+    if settings.psycholog_chat_id is None or int(message.chat.id) != int(settings.psycholog_chat_id):
+        return
+    await message.answer(
+        "Доступные команды в чате психологов:\n"
+        "/psy_stats — статистика психологов\n"
+    )
+
+
+def _format_psy_stats(period: str) -> str:
+    rows = build_staff_performance(period)
+    if not rows:
+        return "Статистика не найдена за выбранный период."
+    period_label = {
+        "all": "за все время",
+        "day": "за день",
+        "week": "за неделю",
+        "month": "за месяц",
+        "year": "за год",
+    }.get(period, "за все время")
+    lines = [f"📊 Статистика психологов {period_label}:"]
+    for idx, row in enumerate(rows[:20], start=1):
+        profile = row.get("profile", {}) or {}
+        username = str(profile.get("username", "")).strip()
+        full_name = str(profile.get("full_name", "")).strip()
+        label = f"@{username}" if username else (full_name or f"ID {row['staff_id']}")
+        lines.append(
+            f"{idx}. {label} | ответов: {row['replies']} | тикетов: {row['tickets']} | ср.оценка: {row['avg_rating']} | баллы: {row['quality_points']}"
+        )
+    return "\n".join(lines)
+
+
+@router.message(
+    lambda message: settings.psycholog_chat_id is not None
+    and int(message.chat.id) == int(settings.psycholog_chat_id)
+    and bool(message.text)
+    and ("Статистика психологов" in str(message.text or "") or "Психолог статистикасы" in str(message.text or ""))
+)
+@router.message(Command("psy_stats"))
+async def psy_stats(message: types.Message):
+    if settings.psycholog_chat_id is None or int(message.chat.id) != int(settings.psycholog_chat_id):
+        await message.answer("Эта команда доступна только в чате психологов.")
+        return
+    await message.answer(_format_psy_stats("all"), reply_markup=ikb.get_psy_stats_period_kb())
+
+
+@router.message(Command("psy_unblock"))
+async def psy_unblock(message: types.Message):
+    if settings.psycholog_chat_id is None or int(message.chat.id) != int(settings.psycholog_chat_id):
+        return
+    if not _is_psy_admin(message.from_user.id):
+        await message.answer("Нет доступа.")
+        return
+    rows = list_blocked_actors()
+    if not rows:
+        await message.answer("Список блокировок пуст.")
+        return
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+    builder = InlineKeyboardBuilder()
+    for row in rows[:30]:
+        key = str(row.get("key") or "")
+        until = row.get("until")
+        if key.startswith("anon:"):
+            actor = f"Аноним #anon_{key.split(':', 1)[1]}"
+            payload = f"anon_{key.split(':', 1)[1]}"
+        elif key.startswith("user:"):
+            actor = f"Пользователь ID {key.split(':', 1)[1]}"
+            payload = f"user_{key.split(':', 1)[1]}"
+        else:
+            actor = key
+            payload = key.replace(":", "_")
+        duration = "навсегда" if not until else str(until).replace("T", " ")[:16] + " UTC"
+        builder.row(
+            types.InlineKeyboardButton(
+                text=f"✅ Разблокировать: {actor} ({duration})",
+                callback_data=f"{CallbackData.PSY_UNBLOCK_PREFIX}{payload}",
+            )
+        )
+    await message.answer("Заблокированные пользователи:", reply_markup=builder.as_markup())
+
+
+@router.callback_query(F.data.startswith(CallbackData.PSY_UNBLOCK_PREFIX))
+async def psy_unblock_cb(callback: types.CallbackQuery):
+    if settings.psycholog_chat_id is None or int(callback.message.chat.id) != int(settings.psycholog_chat_id):
+        await callback.answer("Доступно только в чате психологов.", show_alert=True)
+        return
+    if not _is_psy_admin(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    payload = str(callback.data).replace(CallbackData.PSY_UNBLOCK_PREFIX, "", 1)
+    actor_key = ""
+    if payload.startswith("anon_"):
+        actor_key = f"anon:{payload.replace('anon_', '', 1)}"
+    elif payload.startswith("user_"):
+        actor_key = f"user:{payload.replace('user_', '', 1)}"
+    else:
+        actor_key = payload.replace("_", ":")
+    ok = unblock_actor_by_key(actor_key, callback.from_user.id)
+    await callback.answer("Разблокировано." if ok else "Уже разблокирован.", show_alert=True)
+
+@router.callback_query(F.data.startswith(CallbackData.PSY_STATS_PREFIX))
+async def psy_stats_period(callback: types.CallbackQuery):
+    if settings.psycholog_chat_id is None or int(callback.message.chat.id) != int(settings.psycholog_chat_id):
+        await callback.answer("Доступно только в чате психологов.", show_alert=True)
+        return
+    period = callback.data.replace(CallbackData.PSY_STATS_PREFIX, "")
+    await callback.message.edit_text(_format_psy_stats(period), reply_markup=ikb.get_psy_stats_period_kb())
+    await callback.answer()
+
+
+@router.callback_query(
+    lambda callback: bool(getattr(callback, "data", ""))
+    and str(callback.data).startswith(CallbackData.SUPPORT_ASSIGN_PREFIX)
+    and not str(callback.data).startswith(CallbackData.SUPPORT_ASSIGN_PICK_PREFIX)
+    and not str(callback.data).startswith(CallbackData.SUPPORT_ASSIGN_APPLY_PREFIX)
+)
+async def support_assign_prompt(callback: types.CallbackQuery, state: FSMContext):
+    if not _is_psy_admin(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    ticket_id_raw = callback.data.replace(CallbackData.SUPPORT_ASSIGN_PREFIX, "")
+    ticket_id = _resolve_existing_ticket_id(ticket_id_raw)
+    ticket = get_ticket(ticket_id) or get_ticket(_ticket_id_from_text(str(getattr(callback.message, "text", "") or "")))
+    if not ticket:
+        await callback.answer("Тикет не найден.", show_alert=True)
+        return
+    staff_rows = list_staff_registry()
+    if settings.psycholog_chat_id is not None:
+        try:
+            admins = await callback.bot.get_chat_administrators(int(settings.psycholog_chat_id))
+            for admin_row in admins:
+                user = admin_row.user
+                register_staff_profile(user.id, username=user.username, full_name=user.full_name)
+        except Exception:
+            pass
+        staff_rows = list_staff_registry()
+    if not staff_rows:
+        await callback.answer("Нет доступных психологов в реестре.", show_alert=True)
+        return
+    # Оставляем в списке только тех, кто сейчас состоит в чате психологов.
+    active_rows: list[tuple[int, dict[str, str]]] = []
+    if settings.psycholog_chat_id is not None:
+        for staff_id, profile in staff_rows[:50]:
+            try:
+                member = await callback.bot.get_chat_member(int(settings.psycholog_chat_id), int(staff_id))
+                if str(getattr(member, "status", "")) in {"left", "kicked"}:
+                    continue
+            except Exception:
+                continue
+            active_rows.append((staff_id, profile))
+    else:
+        active_rows = staff_rows[:20]
+    if not active_rows:
+        await callback.answer("Нет доступных психологов в чате.", show_alert=True)
+        return
+
+    # UI назначения отправляем отдельным сообщением, чтобы не затирать карточку тикета.
+    initial_selected = set(int(x) for x in (ticket.get("assigned_staff_ids") or []) if isinstance(x, int) or str(x).isdigit())
+    ui = await callback.message.answer("Загрузка списка психологов…")
+    await state.update_data(assign_ticket_id=str(ticket_id), assign_selected=sorted(initial_selected), assign_ui_message_id=int(ui.message_id))
+    await _render_assign_kb(
+        callback.bot,
+        chat_id=int(ui.chat.id),
+        message_id=int(ui.message_id),
+        ticket_id=str(ticket_id),
+        rows=active_rows,
+        selected=set(initial_selected),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith(CallbackData.SUPPORT_ASSIGN_PICK_PREFIX))
+async def support_assign_pick(callback: types.CallbackQuery, state: FSMContext):
+    if not _is_psy_admin(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    payload = callback.data.replace(CallbackData.SUPPORT_ASSIGN_PICK_PREFIX, "")
+    ticket_id, sep, staff_id_raw = payload.rpartition("_")
+    if not sep:
+        await callback.answer("Некорректные данные назначения.", show_alert=True)
+        return
+    ticket_id = _resolve_existing_ticket_id(ticket_id)
+    if not staff_id_raw.isdigit():
+        await callback.answer("Некорректный психолог.", show_alert=True)
+        return
+    data = await state.get_data()
+    current_ticket = str(data.get("assign_ticket_id") or ticket_id)
+    ui_message_id = int(data.get("assign_ui_message_id") or 0)
+    if not ui_message_id:
+        # Если state потерян — создаем новый UI.
+        ui = await callback.message.answer("Загрузка списка психологов…")
+        ui_message_id = int(ui.message_id)
+        await state.update_data(assign_ui_message_id=ui_message_id)
+    if str(current_ticket) != str(ticket_id):
+        # Если админ параллельно открыл другой тикет — сбрасываем.
+        await state.update_data(assign_ticket_id=str(ticket_id), assign_selected=[])
+        selected: set[int] = set()
+    else:
+        raw_sel = data.get("assign_selected") or []
+        selected = {int(x) for x in raw_sel if str(x).isdigit() or isinstance(x, int)}
+    staff_id = int(staff_id_raw)
+    if staff_id in selected:
+        selected.remove(staff_id)
+    else:
+        selected.add(staff_id)
+    await state.update_data(assign_ticket_id=str(ticket_id), assign_selected=sorted(selected))
+
+    # Перерисовываем клавиатуру (список актуальных участников чата)
+    staff_rows = list_staff_registry()
+    active_rows: list[tuple[int, dict[str, str]]] = []
+    if settings.psycholog_chat_id is not None:
+        for sid, profile in staff_rows[:50]:
+            try:
+                member = await callback.bot.get_chat_member(int(settings.psycholog_chat_id), int(sid))
+                if str(getattr(member, "status", "")) in {"left", "kicked"}:
+                    continue
+            except Exception:
+                continue
+            active_rows.append((sid, profile))
+    else:
+        active_rows = staff_rows[:20]
+    await _render_assign_kb(
+        callback.bot,
+        chat_id=int(callback.message.chat.id),
+        message_id=int(ui_message_id),
+        ticket_id=str(ticket_id),
+        rows=active_rows,
+        selected=selected,
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith(CallbackData.SUPPORT_ASSIGN_APPLY_PREFIX))
+async def support_assign_apply(callback: types.CallbackQuery, state: FSMContext):
+    if not _is_psy_admin(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    ticket_id_raw = callback.data.replace(CallbackData.SUPPORT_ASSIGN_APPLY_PREFIX, "")
+    ticket_id = _resolve_existing_ticket_id(ticket_id_raw)
+    data = await state.get_data()
+    raw_sel = data.get("assign_selected") or []
+    selected = sorted({int(x) for x in raw_sel if str(x).isdigit() or isinstance(x, int)})
+    if not selected:
+        await callback.answer("Выберите хотя бы одного психолога.", show_alert=True)
+        return
+    updated = set_ticket_assignees(ticket_id, selected, callback.from_user.id)
+    if not updated:
+        await callback.answer("Тикет не найден.", show_alert=True)
+        return
+    # Не сбрасываем галочки: оставляем UI с отмеченными назначенными.
+    ui_message_id = int(data.get("assign_ui_message_id") or 0)
+    header = f"Назначены психологи (тикет #{ticket_id}): " + ", ".join(str(x) for x in selected)
+    if ui_message_id:
+        staff_rows = list_staff_registry()
+        active_rows: list[tuple[int, dict[str, str]]] = []
+        if settings.psycholog_chat_id is not None:
+            for sid, profile in staff_rows[:50]:
+                try:
+                    member = await callback.bot.get_chat_member(int(settings.psycholog_chat_id), int(sid))
+                    if str(getattr(member, "status", "")) in {"left", "kicked"}:
+                        continue
+                except Exception:
+                    continue
+                active_rows.append((sid, profile))
+        else:
+            active_rows = staff_rows[:20]
+        try:
+            await _render_assign_kb(
+                callback.bot,
+                chat_id=int(callback.message.chat.id),
+                message_id=int(ui_message_id),
+                ticket_id=str(ticket_id),
+                rows=active_rows,
+                selected=set(selected),
+                header=header,
+            )
+        except Exception:
+            pass
+    await state.update_data(assign_ticket_id=str(ticket_id), assign_selected=selected)
+    await callback.answer("Назначено.")
+
 @router.callback_query(F.data == CallbackData.LEVEL_COLL)
 async def coll_menu(callback: types.CallbackQuery, state: FSMContext):
-    """Отображает меню колледжа."""
+    """Главное меню колледжа."""
     data = await state.get_data()
     lang = data.get("locale", "ru")
-    
-    await state.update_data(current_choice="Колледж")
-    
-    text = MESSAGES[lang]["under_dev"]
+    if data.get("psy_ticket_id"):
+        await state.set_state(None)
+    await state.update_data(current_choice="Колледж", admission_track="college")
+
+    text = MESSAGES[lang]["college_menu"]
     await callback.message.edit_text(
-        text, 
-        reply_markup=ikb.get_back_kb(lang, f"{CallbackData.LANG_PREFIX}{lang}")
+        text,
+        reply_markup=ikb.get_college_menu(lang)
     )
+    approved_profile = get_approved_user(callback.from_user.id)
+    reviewer = is_responsible_user(callback.from_user.id)
+    admin = is_admin(callback.from_user.id)
+    await callback.message.answer(
+        _keyboard_anchor_text(lang),
+        reply_markup=rkb.get_main_action_kb(
+            lang,
+            is_registered=approved_profile is not None,
+            is_reviewer=reviewer,
+            is_admin=admin,
+            is_psy_admin=_is_psy_admin(callback.from_user.id),
+        ),
+    )
+    await state.update_data(action_kb_initialized=True)
     await callback.answer()
 
 

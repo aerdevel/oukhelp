@@ -1,5 +1,6 @@
 {
-  "pending": {
+  "pending": {},
+  "approved": {
     "5394280567": {
       "tg_user_id": 5394280567,
       "tg_username": "spisoq",
@@ -11,100 +12,46 @@
       "specialty": "-",
       "course": "-",
       "phone": "+77700042874",
-      "source": "efefef",
-      "admission_faculty": "Инженерные технологии",
-      "admission_specialty": "6B11380 - Вычислительная техника и программное обеспечение",
+      "source": "smi",
+      "admission_faculty": "Технические и ИТ-направления",
+      "admission_specialty": "07151000 - Эксплуатация и ремонт полиграфического оборудования",
       "calc_discount_rate": 0.0,
       "calc_year_price": 450000,
       "calc_total_price": 1800000,
       "calc_applied_discounts": [
         "Нет льгот"
       ],
+      "is_grant": false,
+      "admission_track": "college",
       "documents": {
         "diploma": {
           "kind": "photo",
-          "file_id": "AgACAgIAAxkBAAIGX2n19XYlXHX44iZe5GA6NSu_-8MwAAKTFmsbQ0-wS8UZSZRCqIUZAQADAgADeQADOwQ",
+          "file_id": "AgACAgIAAxkBAAIGvGn7UUKA5gNGUQydxGm3L9k9RY5AAAJnFGsbeLLYSyTzWVtJToM0AQADAgADeQADOwQ",
           "local_path": "data/files/5394280567/attestat_diplom.jpg"
         },
         "id_card": {
           "kind": "photo",
-          "file_id": "AgACAgIAAxkBAAIGd2n1-DmpnC5Fkqj2KtSRV6jRE11WAAKaFmsbQ0-wS3rh5GN7NzPMAQADAgADeAADOwQ",
+          "file_id": "AgACAgIAAxkBAAIGvGn7UUKA5gNGUQydxGm3L9k9RY5AAAJnFGsbeLLYSyTzWVtJToM0AQADAgADeQADOwQ",
           "local_path": "data/files/5394280567/udostoverenie.jpg"
         },
         "photo_3x4": {
           "kind": "photo",
-          "file_id": "AgACAgIAAxkBAAIGX2n19XYlXHX44iZe5GA6NSu_-8MwAAKTFmsbQ0-wS8UZSZRCqIUZAQADAgADeQADOwQ",
+          "file_id": "AgACAgIAAxkBAAIGvGn7UUKA5gNGUQydxGm3L9k9RY5AAAJnFGsbeLLYSyTzWVtJToM0AQADAgADeQADOwQ",
           "local_path": "data/files/5394280567/photo_3x4.jpg"
         },
         "medical_075": {
           "kind": "photo",
-          "file_id": "AgACAgIAAxkBAAIGX2n19XYlXHX44iZe5GA6NSu_-8MwAAKTFmsbQ0-wS8UZSZRCqIUZAQADAgADeQADOwQ",
+          "file_id": "AgACAgIAAxkBAAIGvGn7UUKA5gNGUQydxGm3L9k9RY5AAAJnFGsbeLLYSyTzWVtJToM0AQADAgADeQADOwQ",
           "local_path": "data/files/5394280567/med_075u.jpg"
         },
-        "ent_certificate": {
-          "kind": "document",
-          "file_id": "BQACAgIAAxkBAAIGfmn1-GtuhrNEfSdXuzI1rQ4X_nZHAALhlgACQ0-wS-JqAuZDngukOwQ",
-          "local_path": "data/files/5394280567/ent_certificate.zip"
-        }
+        "ent_certificate": null
       },
       "consent_personal_data": true,
-      "created_at": "2026-05-02T13:13:21.485907+00:00",
-      "submit_attempt": 2
-    }
-  },
-  "approved": {
-    "5394280567": {
-      "tg_user_id": 5394280567,
-      "tg_username": "spisoq",
-      "tg_full_name": "Pawa Dura",
-      "fio": "нтнтнт",
-      "role": "Работник",
-      "group": "-",
-      "faculty": "-",
-      "specialty": "-",
-      "course": "-",
-      "phone": "+77004287470",
-      "source": "Еркеназым апай",
-      "admission_faculty": "Инженерные технологии",
-      "admission_specialty": "6B11380 - Вычислительная техника и программное обеспечение",
-      "calc_discount_rate": 1.0,
-      "calc_year_price": "",
-      "calc_total_price": "",
-      "calc_applied_discounts": [
-        "ЕНТ 100+ баллов (Грант)"
-      ],
-      "documents": {
-        "diploma": {
-          "kind": "photo",
-          "file_id": "AgACAgIAAxkBAAIFbGnyL7dgiyPym8h0ZQ0JlhfVxDKjAAI9GGsbWXGRS0EwTVWBYPv4AQADAgADeAADOwQ",
-          "local_path": "data/files/5394280567/attestat_diplom.jpg"
-        },
-        "id_card": {
-          "kind": "photo",
-          "file_id": "AgACAgIAAxkBAAIFbGnyL7dgiyPym8h0ZQ0JlhfVxDKjAAI9GGsbWXGRS0EwTVWBYPv4AQADAgADeAADOwQ",
-          "local_path": "data/files/5394280567/udostoverenie.jpg"
-        },
-        "photo_3x4": {
-          "kind": "photo",
-          "file_id": "AgACAgIAAxkBAAIFbGnyL7dgiyPym8h0ZQ0JlhfVxDKjAAI9GGsbWXGRS0EwTVWBYPv4AQADAgADeAADOwQ",
-          "local_path": "data/files/5394280567/photo_3x4.jpg"
-        },
-        "medical_075": {
-          "kind": "photo",
-          "file_id": "AgACAgIAAxkBAAIFbGnyL7dgiyPym8h0ZQ0JlhfVxDKjAAI9GGsbWXGRS0EwTVWBYPv4AQADAgADeAADOwQ",
-          "local_path": "data/files/5394280567/med_075u.jpg"
-        },
-        "ent_certificate": {
-          "kind": "photo",
-          "file_id": "AgACAgIAAxkBAAIFbGnyL7dgiyPym8h0ZQ0JlhfVxDKjAAI9GGsbWXGRS0EwTVWBYPv4AQADAgADeAADOwQ",
-          "local_path": "data/files/5394280567/ent_certificate.jpg"
-        }
-      },
-      "consent_personal_data": true,
-      "created_at": "2026-04-29T16:21:32.548349+00:00",
+      "created_at": "2026-05-06T15:14:25.459690+00:00",
+      "submit_attempt": 3,
       "review_status": "approved",
-      "reviewer_id": 5394280567,
-      "reviewer_username": "spisoq"
+      "reviewer_id": 1216962667,
+      "reviewer_username": "ilikebooobs"
     },
     "7939104831": {
       "tg_user_id": 7939104831,

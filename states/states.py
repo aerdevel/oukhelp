@@ -30,3 +30,9 @@ class HelpRequest(StatesGroup):
     waiting_for_text = State()      # Пользователь описывает проблему/вопрос.
     waiting_for_confirm = State()   # Подтверждение отправки или сброс.
     waiting_for_rating_comment = State()  # Комментарий к оценке после закрытия тикета.
+
+
+class AdminPanel(StatesGroup):
+    waiting_for_group_payload = State()  # Ввод параметров для создания группы через инлайн-панель.
+    waiting_for_group_name = State()  # Создание группы в выбранном контексте.
+    waiting_for_group_rename = State()  # Переименование выбранной группы.

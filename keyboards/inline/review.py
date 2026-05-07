@@ -16,6 +16,15 @@ def get_admin_approve_kb(tg_user_id: int) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def get_admin_panel_kb() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🛂 Центр модерации", callback_data=CallbackData.ADMIN_PANEL_REVIEW))
+    builder.row(InlineKeyboardButton(text="⚙️ Управление доступами", callback_data=CallbackData.ADMIN_PANEL_ACCESS))
+    builder.row(InlineKeyboardButton(text="🗂 Управление группами", callback_data=CallbackData.ADMIN_PANEL_GROUPS))
+    builder.row(InlineKeyboardButton(text="➕ Создать группу", callback_data=CallbackData.ADMIN_PANEL_CREATE_GROUP))
+    return builder.as_markup()
+
+
 def _compact_label(item: dict) -> str:
     fio = str(item.get("fio", "-")).strip()
     if len(fio) > 22:
@@ -24,7 +33,8 @@ def _compact_label(item: dict) -> str:
     group = str(item.get("group", "-")).strip() or "-"
     if len(group) > 10:
         group = f"{group[:10]}..."
-    return f"{status} {fio} | {group}"
+    track = "🏫" if str(item.get("admission_track", "uni")) == "college" else "🏛"
+    return f"{track} {status} {fio} | {group}"
 
 
 def get_review_list_kb(items: list[dict], page: int, total_pages: int, *, processed: bool = False) -> InlineKeyboardMarkup:
@@ -60,7 +70,7 @@ def get_review_list_kb(items: list[dict], page: int, total_pages: int, *, proces
         InlineKeyboardButton(text="⏳ Необработанные", callback_data=f"{CallbackData.REVIEW_TAB_PREFIX}0"),
         InlineKeyboardButton(text="✅ Обработанные", callback_data=f"{CallbackData.REVIEW_TAB_PREFIX}1"),
     )
-    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data=CallbackData.LEVEL_UNI))
+    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data=CallbackData.ADMIN_PANEL))
     return builder.as_markup()
 
 
@@ -96,7 +106,7 @@ def get_admin_users_kb(items: list[tuple[int, str]]) -> InlineKeyboardMarkup:
                 callback_data=f"{CallbackData.ADMIN_USER_PREFIX}{user_id}",
             )
         )
-    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data=CallbackData.LEVEL_UNI))
+    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data=CallbackData.ADMIN_PANEL))
     return builder.as_markup()
 
 
@@ -109,6 +119,7 @@ def get_admin_user_actions_kb(user_id: int, profile: dict) -> InlineKeyboardMark
     builder.row(InlineKeyboardButton(text=f"{review_mark} Модерация", callback_data=f"{CallbackData.ADMIN_TOGGLE_REVIEW_PREFIX}{user_id}"))
     builder.row(InlineKeyboardButton(text=f"{admin_mark} Админ-права", callback_data=f"{CallbackData.ADMIN_TOGGLE_ADMIN_PREFIX}{user_id}"))
     builder.row(InlineKeyboardButton(text="🎯 Назначить специальности", callback_data=f"{CallbackData.ADMIN_ASSIGN_SPECS_PREFIX}{user_id}"))
+    builder.row(InlineKeyboardButton(text="🧩 Назначить группы", callback_data=f"{CallbackData.ADMIN_ASSIGN_GROUPS_PREFIX}{user_id}"))
     builder.row(InlineKeyboardButton(text="🔙 К списку", callback_data="admin_back_list"))
     return builder.as_markup()
 
@@ -163,6 +174,49 @@ def get_admin_specs_confirm_kb(target_user_id: int) -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"{CallbackData.ADMIN_SPECS_APPLY_PREFIX}{target_user_id}"),
         InlineKeyboardButton(text="❌ Сбросить", callback_data=f"{CallbackData.ADMIN_SPECS_RESET_PREFIX}{target_user_id}"),
     )
+    return builder.as_markup()
+
+
+def get_admin_groups_kb(
+    *,
+    target_user_id: int,
+    groups: list[str],
+    selected_indexes: set[int],
+    page: int,
+    total_pages: int,
+) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for local_idx, group_name in enumerate(groups):
+        absolute_idx = page * 7 + local_idx
+        mark = "✅" if absolute_idx in selected_indexes else "⬜"
+        builder.row(
+            InlineKeyboardButton(
+                text=f"{mark} {group_name}",
+                callback_data=f"{CallbackData.ADMIN_GROUPS_TOGGLE_PREFIX}{target_user_id}_{absolute_idx}",
+            )
+        )
+    nav_row = []
+    if page > 0:
+        nav_row.append(
+            InlineKeyboardButton(
+                text="⬅️",
+                callback_data=f"{CallbackData.ADMIN_GROUPS_PAGE_PREFIX}{target_user_id}_{page - 1}",
+            )
+        )
+    nav_row.append(InlineKeyboardButton(text=f"{page + 1}/{max(1, total_pages)}", callback_data="noop"))
+    if page < total_pages - 1:
+        nav_row.append(
+            InlineKeyboardButton(
+                text="➡️",
+                callback_data=f"{CallbackData.ADMIN_GROUPS_PAGE_PREFIX}{target_user_id}_{page + 1}",
+            )
+        )
+    builder.row(*nav_row)
+    builder.row(
+        InlineKeyboardButton(text="✅ Применить", callback_data=f"{CallbackData.ADMIN_GROUPS_APPLY_PREFIX}{target_user_id}"),
+        InlineKeyboardButton(text="❌ Сбросить", callback_data=f"{CallbackData.ADMIN_GROUPS_RESET_PREFIX}{target_user_id}"),
+    )
+    builder.row(InlineKeyboardButton(text="🔙 К пользователю", callback_data=f"{CallbackData.ADMIN_USER_PREFIX}{target_user_id}"))
     return builder.as_markup()
 
 

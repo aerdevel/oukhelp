@@ -6,12 +6,12 @@ from core.resources.text_file.menus import BUTTONS
 from utils.i18n import tr
 
 
-def get_docs_list_kb(lang: str) -> InlineKeyboardMarkup:
+def get_docs_list_kb(lang: str, back_callback: str = CallbackData.LEVEL_UNI) -> InlineKeyboardMarkup:
     """Кнопки входа в загрузку документов."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text=BUTTONS[lang]["send_docs"], callback_data=CallbackData.START_UPLOAD)],
-            [InlineKeyboardButton(text=BUTTONS[lang]["back"], callback_data=CallbackData.LEVEL_UNI)],
+            [InlineKeyboardButton(text=BUTTONS[lang]["back"], callback_data=back_callback)],
         ]
     )
 
@@ -57,14 +57,14 @@ def get_docs_confirm_kb(lang: str, *, consent_given: bool = False) -> InlineKeyb
     )
 
 
-def get_docs_done_kb(lang: str) -> InlineKeyboardMarkup:
+def get_docs_done_kb(lang: str, menu_callback: str = CallbackData.LEVEL_UNI) -> InlineKeyboardMarkup:
     """Возврат в главное меню после отправки пакета."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text=tr(lang, "🏠 В главное меню", "🏠 Бас мәзірге"),
-                    callback_data=CallbackData.LEVEL_UNI,
+                    callback_data=menu_callback,
                 )
             ]
         ]

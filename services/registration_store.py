@@ -207,3 +207,20 @@ def delete_user_registration_data(tg_user_id: int) -> bool:
     if changed:
         _write_store(data)
     return changed
+
+
+def set_user_grant_flag(tg_user_id: int, is_grant: bool) -> dict[str, Any] | None:
+    data = _read_store()
+    target_id = _safe_int(tg_user_id, 0)
+    updated: dict[str, Any] | None = None
+    changed = False
+    for bucket in ("pending", "approved", "denied"):
+        for item in data[bucket]:
+            if _safe_int(item.get("tg_user_id"), 0) != target_id:
+                continue
+            item["is_grant"] = bool(is_grant)
+            updated = item
+            changed = True
+    if changed:
+        _write_store(data)
+    return updated

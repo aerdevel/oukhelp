@@ -5,12 +5,21 @@ from aiogram import F, Router, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import ReplyKeyboardRemove
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from core.callbacks import CallbackData
-from core.resources.text_file.catalog import SPECIALTIES_BY_DEPARTMENT
+from core.resources.text_file.catalog import get_specialties_by_department
 from core.curator_const import is_responsible_user
-from services.access_control import can_review, get_all_specialties, get_user_permissions, is_admin, list_managers, set_user_permissions
-from states.states import Form
+from services.access_control import (
+    can_review,
+    get_all_faculties,
+    get_all_specialties,
+    get_user_permissions,
+    is_admin,
+    list_managers,
+    set_user_permissions,
+)
+from states.states import AdminPanel, Form
 from keyboards import inline as ikb
 from keyboards import reply as rkb
 from services.notifier import notify_responsible_new_registration
@@ -29,17 +38,35 @@ from services.registration_store import (
 )
 from utils.i18n import tr
 from utils.validators import normalize_phone, sanitize_text
+from services.study_groups import (
+    add_group,
+    delete_group,
+    list_all_groups,
+    list_groups,
+    list_groups_detailed,
+    list_groups_for_specialties,
+    update_group_name,
+)
 
 router = Router()
 PAGE_SIZE = 6
 ADMIN_SPECS_PAGE_SIZE = 7
 ADMIN_SPECS_SELECTED_KEY = "admin_specs_selected"
+ADMIN_SPECS_TRACK_KEY = "admin_specs_track"
+ADMIN_GROUPS_PAGE_SIZE = 7
+ADMIN_GROUPS_SELECTED_KEY = "admin_groups_selected"
+ADMIN_GROUPS_TRACK_KEY = "admin_groups_track"
+ADMIN_GROUP_MGMT_CTX_KEY = "admin_group_mgmt_ctx"
 ROLE_BY_CALLBACK = {
     "role_student": "Студент",
     "role_graduate": "Выпускник",
     "role_worker": "Работник",
     "role_teacher": "Преподаватель",
 }
+
+
+def _track_from_state(data: dict) -> str:
+    return "college" if data.get("admission_track") == "college" or data.get("current_choice") == "Колледж" else "uni"
 
 
 def _safe_tg_id(value: object) -> int:
@@ -131,16 +158,61 @@ def _selected_for_user(state_data: dict, target_id: int) -> set[int]:
     return set(selected_map.get(str(target_id), []))
 
 
+def _get_admin_track_map(state_data: dict) -> dict[str, str]:
+    raw = state_data.get(ADMIN_SPECS_TRACK_KEY, {})
+    return raw if isinstance(raw, dict) else {}
+
+
+def _selected_track_for_user(state_data: dict, target_id: int) -> str:
+    track = _get_admin_track_map(state_data).get(str(target_id), "uni")
+    return "college" if track == "college" else "uni"
+
+
+def _groups_page_payload(page: int, groups: list[str]) -> tuple[list[str], int, int]:
+    total_pages = max(1, ceil(len(groups) / ADMIN_GROUPS_PAGE_SIZE))
+    safe_page = max(0, min(page, total_pages - 1))
+    start = safe_page * ADMIN_GROUPS_PAGE_SIZE
+    end = start + ADMIN_GROUPS_PAGE_SIZE
+    return groups[start:end], safe_page, total_pages
+
+
+def _get_admin_groups_selected_map(state_data: dict) -> dict[str, list[int]]:
+    raw = state_data.get(ADMIN_GROUPS_SELECTED_KEY, {})
+    return raw if isinstance(raw, dict) else {}
+
+
+def _selected_groups_for_user(state_data: dict, target_id: int) -> set[int]:
+    selected_map = _get_admin_groups_selected_map(state_data)
+    return set(selected_map.get(str(target_id), []))
+
+
+def _get_admin_groups_track_map(state_data: dict) -> dict[str, str]:
+    raw = state_data.get(ADMIN_GROUPS_TRACK_KEY, {})
+    return raw if isinstance(raw, dict) else {}
+
+
+def _selected_groups_track_for_user(state_data: dict, target_id: int) -> str:
+    track = _get_admin_groups_track_map(state_data).get(str(target_id), "uni")
+    return "college" if track == "college" else "uni"
+
+
+def _get_group_mgmt_context(state_data: dict) -> dict:
+    raw = state_data.get(ADMIN_GROUP_MGMT_CTX_KEY, {})
+    return raw if isinstance(raw, dict) else {}
+
+
 @router.callback_query(F.data == CallbackData.FILL_FORM)
 async def start_reg(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     lang = data.get("locale", "ru")
+    track = _track_from_state(data)
+    back_callback = CallbackData.LEVEL_COLL if track == "college" else CallbackData.LEVEL_UNI
     text = tr(lang, "🚀 Начнем! Введите ваше ФИО:", "🚀 Бастаймыз! Толық аты-жөніңізді енгізіңіз:")
     await state.update_data(tg_user_id=callback.from_user.id, tg_full_name=callback.from_user.full_name, tg_username=callback.from_user.username)
     if callback.message.text:
-        await callback.message.edit_text(text, reply_markup=ikb.get_back_kb(lang, CallbackData.LEVEL_UNI))
+        await callback.message.edit_text(text, reply_markup=ikb.get_back_kb(lang, back_callback))
     else:
-        await callback.message.answer(text, reply_markup=ikb.get_back_kb(lang, CallbackData.LEVEL_UNI))
+        await callback.message.answer(text, reply_markup=ikb.get_back_kb(lang, back_callback))
     await state.set_state(Form.fio)
     await callback.answer()
 
@@ -173,7 +245,7 @@ async def process_phone_any(message: types.Message, state: FSMContext):
 async def _process_phone_input(message: types.Message, state: FSMContext):
     data = await state.get_data()
     lang = data.get("locale", "ru")
-    logging.info(
+    logging.debug(
         "phone_step update: user_id=%s has_contact=%s text=%s",
         message.from_user.id if message.from_user else "-",
         bool(message.contact),
@@ -275,6 +347,7 @@ async def _process_phone_input(message: types.Message, state: FSMContext):
 async def process_role(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     lang = data.get("locale", "ru")
+    track = _track_from_state(data)
     role = ROLE_BY_CALLBACK[callback.data]
     await state.update_data(role=role)
     if role == "Работник":
@@ -282,7 +355,7 @@ async def process_role(callback: types.CallbackQuery, state: FSMContext):
         await _send_preview(callback, state)
     else:
         text = tr(lang, "Выберите кафедру:", "Кафедраны таңдаңыз:")
-        await callback.message.edit_text(text, reply_markup=ikb.get_faculties_kb(lang))
+        await callback.message.edit_text(text, reply_markup=ikb.get_faculties_kb(lang, track=track))
         await state.set_state(Form.specialty)
     await callback.answer()
 
@@ -300,6 +373,7 @@ async def process_role_text_fallback(message: types.Message, state: FSMContext):
         return
     data = await state.get_data()
     lang = data.get("locale", "ru")
+    track = _track_from_state(data)
     await state.update_data(role=role)
     if role == "Работник":
         await state.update_data(faculty="-", specialty="-", course="-", group="-")
@@ -307,7 +381,7 @@ async def process_role_text_fallback(message: types.Message, state: FSMContext):
         return
     await message.answer(
         tr(lang, "Выберите кафедру:", "Кафедраны таңдаңыз:"),
-        reply_markup=ikb.get_faculties_kb(lang),
+        reply_markup=ikb.get_faculties_kb(lang, track=track),
     )
     await state.set_state(Form.specialty)
 
@@ -316,13 +390,17 @@ async def process_role_text_fallback(message: types.Message, state: FSMContext):
 async def process_faculty(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     lang = data.get("locale", "ru")
+    track = _track_from_state(data)
     faculty_idx = callback.data.replace(CallbackData.FAC_PREFIX, "")
-    faculties = list(SPECIALTIES_BY_DEPARTMENT[lang].keys())
+    faculties = list(get_specialties_by_department(lang, track).keys())
     if not faculty_idx.isdigit() or int(faculty_idx) >= len(faculties):
         await callback.answer("Некорректный выбор кафедры", show_alert=True)
         return
     selected_idx = int(faculty_idx)
-    await callback.message.edit_text(tr(lang, "Выберите вашу специальность из списка:", "Мамандығыңызды таңдаңыз:"), reply_markup=ikb.get_specialties_kb(lang, selected_idx))
+    await callback.message.edit_text(
+        tr(lang, "Выберите вашу специальность из списка:", "Мамандығыңызды таңдаңыз:"),
+        reply_markup=ikb.get_specialties_kb(lang, selected_idx, track=track),
+    )
     await callback.answer()
 
 
@@ -330,6 +408,7 @@ async def process_faculty(callback: types.CallbackQuery, state: FSMContext):
 async def process_specialty(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     lang = data.get("locale", "ru")
+    track = _track_from_state(data)
     role = data.get("role")
     payload = callback.data.replace(CallbackData.SPEC_PREFIX, "")
     if "_" not in payload:
@@ -339,14 +418,15 @@ async def process_specialty(callback: types.CallbackQuery, state: FSMContext):
     if not fac_idx_raw.isdigit() or not spec_idx_raw.isdigit():
         await callback.answer("Некорректный выбор специальности", show_alert=True)
         return
-    faculties = list(SPECIALTIES_BY_DEPARTMENT[lang].keys())
+    specialties_by_department = get_specialties_by_department(lang, track)
+    faculties = list(specialties_by_department.keys())
     fac_idx = int(fac_idx_raw)
     spec_idx = int(spec_idx_raw)
     if fac_idx >= len(faculties):
         await callback.answer("Некорректный выбор специальности", show_alert=True)
         return
     selected_faculty = faculties[fac_idx]
-    specialties = SPECIALTIES_BY_DEPARTMENT[lang][selected_faculty]
+    specialties = specialties_by_department[selected_faculty]
     if spec_idx >= len(specialties):
         await callback.answer("Некорректный выбор специальности", show_alert=True)
         return
@@ -370,7 +450,11 @@ async def process_specialty(callback: types.CallbackQuery, state: FSMContext):
 async def back_to_specialty(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     lang = data.get("locale", "ru")
-    await callback.message.edit_text("Выберите кафедру:" if lang == "ru" else "Кафедраны таңдаңыз:", reply_markup=ikb.get_faculties_kb(lang))
+    track = _track_from_state(data)
+    await callback.message.edit_text(
+        "Выберите кафедру:" if lang == "ru" else "Кафедраны таңдаңыз:",
+        reply_markup=ikb.get_faculties_kb(lang, track=track),
+    )
     await state.set_state(Form.specialty)
 
 
@@ -378,7 +462,11 @@ async def back_to_specialty(callback: types.CallbackQuery, state: FSMContext):
 async def back_to_faculty(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     lang = data.get("locale", "ru")
-    await callback.message.edit_text("Выберите кафедру:" if lang == "ru" else "Кафедраны таңдаңыз:", reply_markup=ikb.get_faculties_kb(lang))
+    track = _track_from_state(data)
+    await callback.message.edit_text(
+        "Выберите кафедру:" if lang == "ru" else "Кафедраны таңдаңыз:",
+        reply_markup=ikb.get_faculties_kb(lang, track=track),
+    )
     await state.set_state(Form.specialty)
     await callback.answer()
 
@@ -389,8 +477,44 @@ async def process_course(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(course=course_val)
     data = await state.get_data()
     lang = data.get("locale", "ru")
-    await callback.message.edit_text("Введите номер вашей группы (например, ИТ-21-1):" if lang == "ru" else "Топ нөмірін енгізіңіз (мысалы, ИТ-21-1):")
+    track = _track_from_state(data)
+    specialty = str(data.get("specialty", "")).strip()
+    groups = list_groups(track=track, specialty=specialty, course=str(course_val))
+    if groups:
+        await callback.message.edit_text(
+            tr(
+                lang,
+                "Выберите группу из списка или введите вручную:",
+                "Тізімнен топты таңдаңыз немесе қолмен енгізіңіз:",
+            ),
+            reply_markup=ikb.get_group_select_kb(lang, groups),
+        )
+    else:
+        await callback.message.edit_text(
+            "Введите номер вашей группы (например, ИТ-21-1):" if lang == "ru" else "Топ нөмірін енгізіңіз (мысалы, ИТ-21-1):"
+        )
     await state.set_state(Form.group)
+    await callback.answer()
+
+
+@router.callback_query(Form.group, F.data.startswith(CallbackData.GROUP_PICK_PREFIX))
+async def process_group_pick(callback: types.CallbackQuery, state: FSMContext):
+    group_name = callback.data.replace(CallbackData.GROUP_PICK_PREFIX, "").strip()
+    if not group_name:
+        await callback.answer("Некорректная группа.", show_alert=True)
+        return
+    await state.update_data(group=group_name)
+    await _send_preview(callback, state)
+    await callback.answer()
+
+
+@router.callback_query(Form.group, F.data == CallbackData.GROUP_MANUAL)
+async def process_group_manual(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    lang = data.get("locale", "ru")
+    await callback.message.edit_text(
+        "Введите номер вашей группы (например, ИТ-21-1):" if lang == "ru" else "Топ нөмірін енгізіңіз (мысалы, ИТ-21-1):"
+    )
     await callback.answer()
 
 
@@ -409,6 +533,8 @@ async def process_group(message: types.Message, state: FSMContext):
 async def confirm_registration(callback: types.CallbackQuery, state: FSMContext):
     user_data = await state.get_data()
     lang = user_data.get("locale", "ru")
+    user_data["admission_track"] = _track_from_state(user_data)
+    user_data.setdefault("is_grant", False)
     add_pending_registration(user_data)
     user_data["status"] = "pending"
     pending_card = get_pending_by_tg_user_id(callback.from_user.id) or {}
@@ -423,7 +549,8 @@ async def confirm_registration(callback: types.CallbackQuery, state: FSMContext)
         if lang == "ru"
         else "✅ Өтінім жіберілді. Жауапты менеджер сізбен байланысады."
     )
-    await callback.message.edit_text(text, reply_markup=ikb.get_back_kb(lang, CallbackData.LEVEL_UNI))
+    menu_callback = CallbackData.LEVEL_COLL if user_data.get("admission_track") == "college" else CallbackData.LEVEL_UNI
+    await callback.message.edit_text(text, reply_markup=ikb.get_back_kb(lang, menu_callback))
     await state.clear()
     await callback.answer()
 
@@ -446,7 +573,8 @@ async def my_cabinet(callback: types.CallbackQuery, state: FSMContext):
         f"🎓 Курс: {profile.get('course', '-')}\n"
         f"📚 Группа: {profile.get('group', '-')}"
     )
-    await callback.message.edit_text(text, reply_markup=ikb.get_back_kb(lang, CallbackData.LEVEL_UNI))
+    menu_callback = CallbackData.LEVEL_COLL if str(profile.get("admission_track", "uni")) == "college" else CallbackData.LEVEL_UNI
+    await callback.message.edit_text(text, reply_markup=ikb.get_back_kb(lang, menu_callback))
     await callback.answer()
 
 
@@ -515,8 +643,10 @@ async def review_open(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer("Нет доступа к этой группе.", show_alert=True)
         return
     username_text = f"@{card.get('tg_username')}" if card.get("tg_username") else "-"
+    track_label = "Колледж" if str(card.get("admission_track", "uni")) == "college" else "Университет"
     text = (
         "📋 Данные заявки\n\n"
+        f"🎓 Уровень: {track_label}\n"
         f"👤 ФИО: {card.get('fio', '-')}\n"
         f"📞 Тел: {card.get('phone', '-')}\n"
         f"🎭 Статус: {card.get('role', '-')}\n"
@@ -626,8 +756,10 @@ async def review_done_open(callback: types.CallbackQuery):
         return
     reviewer_username = str(card.get("reviewed_by_username", "")).strip()
     reviewer_info = f"@{reviewer_username}" if reviewer_username else str(card.get("reviewed_by", "-"))
+    track_label = "Колледж" if str(card.get("admission_track", "uni")) == "college" else "Университет"
     text = (
         "✅ Обработанная заявка\n\n"
+        f"🎓 Уровень: {track_label}\n"
         f"👤 ФИО: {card.get('fio', '-')}\n"
         f"📚 Группа: {card.get('group', '-')}\n"
         f"📌 Статус: {card.get('status', '-')}\n"
@@ -709,6 +841,361 @@ async def admin_access_panel(message: types.Message):
     await message.answer("⚙️ Выберите пользователя для изменения прав:", reply_markup=ikb.get_admin_users_kb(items))
 
 
+@router.message(F.text.in_(["🛠 Админ панель", "🛠 Админ панелі"]))
+async def admin_panel(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        await message.answer("Нет доступа.")
+        return
+    await state.set_state(None)
+    await message.answer("🛠 Админ-панель", reply_markup=ikb.get_admin_panel_kb())
+
+
+@router.callback_query(F.data == CallbackData.ADMIN_PANEL)
+async def admin_panel_callback(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    await state.set_state(None)
+    await callback.message.edit_text("🛠 Админ-панель", reply_markup=ikb.get_admin_panel_kb())
+    await callback.answer()
+
+
+@router.callback_query(F.data == CallbackData.ADMIN_PANEL_REVIEW)
+async def admin_panel_review(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    items = _filter_pending_for_reviewer(callback.from_user.id)
+    if not items:
+        await callback.message.edit_text(
+            "Сейчас нет необработанных заявок.",
+            reply_markup=ikb.get_review_list_kb([], 0, 1, processed=False),
+        )
+        await callback.answer()
+        return
+    page_items, page, total_pages = _review_page_payload(items, 0)
+    await callback.message.edit_text(
+        "🛂 Центр модерации: необработанные",
+        reply_markup=ikb.get_review_list_kb(page_items, page, total_pages, processed=False),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == CallbackData.ADMIN_PANEL_ACCESS)
+async def admin_panel_access(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    items = _admin_candidates()
+    if not items:
+        await callback.message.edit_text("Пока нет назначенных пользователей.")
+        await callback.answer()
+        return
+    await callback.message.edit_text(
+        "⚙️ Выберите пользователя для изменения прав:",
+        reply_markup=ikb.get_admin_users_kb(items),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == CallbackData.ADMIN_PANEL_CREATE_GROUP)
+async def admin_panel_create_group(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    await state.update_data(**{ADMIN_GROUP_MGMT_CTX_KEY: {"action": "create"}})
+    await callback.message.edit_text(
+        "Создание группы: выберите уровень",
+        reply_markup=types.InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    types.InlineKeyboardButton(text="🏛 Университет", callback_data=f"{CallbackData.ADMIN_GROUP_MGMT_TRACK_PREFIX}uni"),
+                    types.InlineKeyboardButton(text="🏫 Колледж", callback_data=f"{CallbackData.ADMIN_GROUP_MGMT_TRACK_PREFIX}college"),
+                ],
+                [types.InlineKeyboardButton(text="🔙 Назад", callback_data=CallbackData.ADMIN_PANEL)],
+            ]
+        ),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == CallbackData.ADMIN_PANEL_GROUPS)
+async def admin_panel_groups(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    await state.update_data(**{ADMIN_GROUP_MGMT_CTX_KEY: {}})
+    await callback.message.edit_text(
+        "🗂 Управление группами: выберите уровень",
+        reply_markup=types.InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    types.InlineKeyboardButton(text="🏛 Университет", callback_data=f"{CallbackData.ADMIN_GROUP_MGMT_TRACK_PREFIX}uni"),
+                    types.InlineKeyboardButton(text="🏫 Колледж", callback_data=f"{CallbackData.ADMIN_GROUP_MGMT_TRACK_PREFIX}college"),
+                ],
+                [types.InlineKeyboardButton(text="🔙 Назад", callback_data=CallbackData.ADMIN_PANEL)],
+            ]
+        ),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith(CallbackData.ADMIN_GROUP_MGMT_TRACK_PREFIX))
+async def admin_group_mgmt_track(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    track = callback.data.replace(CallbackData.ADMIN_GROUP_MGMT_TRACK_PREFIX, "")
+    if track not in {"uni", "college"}:
+        await callback.answer("Некорректный уровень.", show_alert=True)
+        return
+    faculties = list(get_specialties_by_department("ru", track).keys())
+    builder = InlineKeyboardBuilder()
+    for idx, faculty in enumerate(faculties):
+        builder.row(types.InlineKeyboardButton(text=faculty, callback_data=f"{CallbackData.ADMIN_GROUP_MGMT_FAC_PREFIX}{idx}"))
+    builder.row(types.InlineKeyboardButton(text="🔙 Назад", callback_data=CallbackData.ADMIN_PANEL_GROUPS))
+    await state.update_data(**{ADMIN_GROUP_MGMT_CTX_KEY: {"track": track}})
+    await callback.message.edit_text("Выберите кафедру:", reply_markup=builder.as_markup())
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith(CallbackData.ADMIN_GROUP_MGMT_FAC_PREFIX))
+async def admin_group_mgmt_fac(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    state_data = await state.get_data()
+    ctx = _get_group_mgmt_context(state_data)
+    track = ctx.get("track", "uni")
+    raw = callback.data.replace(CallbackData.ADMIN_GROUP_MGMT_FAC_PREFIX, "")
+    faculties = list(get_specialties_by_department("ru", track).keys())
+    if not raw.isdigit() or int(raw) >= len(faculties):
+        await callback.answer("Некорректная кафедра.", show_alert=True)
+        return
+    faculty_idx = int(raw)
+    faculty = faculties[faculty_idx]
+    specs = get_specialties_by_department("ru", track).get(faculty, [])
+    builder = InlineKeyboardBuilder()
+    for idx, spec in enumerate(specs):
+        builder.row(types.InlineKeyboardButton(text=spec, callback_data=f"{CallbackData.ADMIN_GROUP_MGMT_SPEC_PREFIX}{idx}"))
+    builder.row(types.InlineKeyboardButton(text="🔙 Назад", callback_data=f"{CallbackData.ADMIN_GROUP_MGMT_TRACK_PREFIX}{track}"))
+    await state.update_data(**{ADMIN_GROUP_MGMT_CTX_KEY: {**ctx, "faculty": faculty, "faculty_idx": faculty_idx}})
+    await callback.message.edit_text("Выберите специальность:", reply_markup=builder.as_markup())
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith(CallbackData.ADMIN_GROUP_MGMT_SPEC_PREFIX))
+async def admin_group_mgmt_spec(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    state_data = await state.get_data()
+    ctx = _get_group_mgmt_context(state_data)
+    track = ctx.get("track", "uni")
+    faculty = ctx.get("faculty", "")
+    specs = get_specialties_by_department("ru", track).get(faculty, [])
+    raw = callback.data.replace(CallbackData.ADMIN_GROUP_MGMT_SPEC_PREFIX, "")
+    if not raw.isdigit() or int(raw) >= len(specs):
+        await callback.answer("Некорректная специальность.", show_alert=True)
+        return
+    spec_idx = int(raw)
+    specialty = specs[spec_idx]
+    builder = InlineKeyboardBuilder()
+    for course in ["1", "2", "3", "4", "Graduate"]:
+        label = f"{course} курс" if course != "Graduate" else "Выпускник"
+        builder.row(types.InlineKeyboardButton(text=label, callback_data=f"{CallbackData.ADMIN_GROUP_MGMT_COURSE_PREFIX}{course}"))
+    builder.row(types.InlineKeyboardButton(text="🔙 Назад", callback_data=f"{CallbackData.ADMIN_GROUP_MGMT_FAC_PREFIX}{int(ctx.get('faculty_idx', 0))}"))
+    await state.update_data(**{ADMIN_GROUP_MGMT_CTX_KEY: {**ctx, "specialty": specialty, "spec_idx": spec_idx}})
+    await callback.message.edit_text("Выберите курс:", reply_markup=builder.as_markup())
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith(CallbackData.ADMIN_GROUP_MGMT_COURSE_PREFIX))
+async def admin_group_mgmt_course(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    course = callback.data.replace(CallbackData.ADMIN_GROUP_MGMT_COURSE_PREFIX, "")
+    state_data = await state.get_data()
+    ctx = _get_group_mgmt_context(state_data)
+    track = ctx.get("track", "uni")
+    faculty = ctx.get("faculty", "")
+    specialty = ctx.get("specialty", "")
+    rows = list_groups_detailed(track=track, faculty=faculty, specialty=specialty, course=course)
+    if str(ctx.get("action", "")) == "create":
+        await state.update_data(**{ADMIN_GROUP_MGMT_CTX_KEY: {**ctx, "course": course}})
+        await state.set_state(AdminPanel.waiting_for_group_name)
+        await callback.message.edit_text(
+            f"Вы выбрали: {track} / {faculty} / {specialty} / {course}\nВведите название новой группы:"
+        )
+        await callback.answer()
+        return
+    builder = InlineKeyboardBuilder()
+    for row in rows[:25]:
+        builder.row(
+            types.InlineKeyboardButton(
+                text=row["group_name"],
+                callback_data=f"{CallbackData.ADMIN_GROUP_MGMT_OPEN_PREFIX}{row['group_name']}",
+            )
+        )
+    builder.row(types.InlineKeyboardButton(text="➕ Создать группу", callback_data=CallbackData.ADMIN_GROUP_MGMT_CREATE))
+    builder.row(types.InlineKeyboardButton(text="🔙 Назад", callback_data=f"{CallbackData.ADMIN_GROUP_MGMT_SPEC_PREFIX}{int(ctx.get('spec_idx', 0))}"))
+    await state.update_data(**{ADMIN_GROUP_MGMT_CTX_KEY: {**ctx, "course": course}})
+    await callback.message.edit_text(
+        f"Группы: {faculty} / {specialty} / {course}\nВыберите группу для действий:",
+        reply_markup=builder.as_markup(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == CallbackData.ADMIN_GROUP_MGMT_CREATE)
+async def admin_group_mgmt_create(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    await state.set_state(AdminPanel.waiting_for_group_name)
+    await callback.message.answer("Введите название новой группы:")
+    await callback.answer()
+
+
+@router.message(AdminPanel.waiting_for_group_name)
+async def admin_group_mgmt_create_name(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        await message.answer("Нет доступа.")
+        await state.set_state(None)
+        return
+    name = sanitize_text(message.text or "")
+    if len(name) < 2:
+        await message.answer("Название группы слишком короткое.")
+        return
+    state_data = await state.get_data()
+    ctx = _get_group_mgmt_context(state_data)
+    ok = add_group(
+        track=ctx.get("track", "uni"),
+        faculty=ctx.get("faculty", ""),
+        specialty=ctx.get("specialty", ""),
+        course=ctx.get("course", ""),
+        group_name=name,
+        created_by=message.from_user.id,
+    )
+    await state.set_state(None)
+    if not ok:
+        await message.answer("Не удалось создать группу (возможно дубликат).")
+        return
+    await message.answer("✅ Группа создана.", reply_markup=ikb.get_admin_panel_kb())
+
+
+@router.callback_query(F.data.startswith(CallbackData.ADMIN_GROUP_MGMT_OPEN_PREFIX))
+async def admin_group_mgmt_open(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    group_name = callback.data.replace(CallbackData.ADMIN_GROUP_MGMT_OPEN_PREFIX, "")
+    state_data = await state.get_data()
+    ctx = _get_group_mgmt_context(state_data)
+    await state.update_data(**{ADMIN_GROUP_MGMT_CTX_KEY: {**ctx, "group_name": group_name}})
+    await callback.message.edit_text(
+        f"Группа: {group_name}\nВыберите действие:",
+        reply_markup=types.InlineKeyboardMarkup(
+            inline_keyboard=[
+                [types.InlineKeyboardButton(text="✏️ Переименовать", callback_data=CallbackData.ADMIN_GROUP_MGMT_RENAME)],
+                [types.InlineKeyboardButton(text="🗑 Удалить", callback_data=f"{CallbackData.ADMIN_GROUP_MGMT_ACTION_PREFIX}delete")],
+                [types.InlineKeyboardButton(text="🔙 Назад", callback_data=f"{CallbackData.ADMIN_GROUP_MGMT_COURSE_PREFIX}{ctx.get('course', '1')}")],
+            ]
+        ),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == CallbackData.ADMIN_GROUP_MGMT_RENAME)
+async def admin_group_mgmt_rename(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    await state.set_state(AdminPanel.waiting_for_group_rename)
+    await callback.message.answer("Введите новое название группы:")
+    await callback.answer()
+
+
+@router.message(AdminPanel.waiting_for_group_rename)
+async def admin_group_mgmt_rename_name(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        await message.answer("Нет доступа.")
+        await state.set_state(None)
+        return
+    new_name = sanitize_text(message.text or "")
+    if len(new_name) < 2:
+        await message.answer("Название группы слишком короткое.")
+        return
+    state_data = await state.get_data()
+    ctx = _get_group_mgmt_context(state_data)
+    ok = update_group_name(
+        track=ctx.get("track", "uni"),
+        faculty=ctx.get("faculty", ""),
+        specialty=ctx.get("specialty", ""),
+        course=ctx.get("course", ""),
+        old_group_name=ctx.get("group_name", ""),
+        new_group_name=new_name,
+    )
+    await state.set_state(None)
+    if not ok:
+        await message.answer("Не удалось переименовать группу.")
+        return
+    await message.answer("✅ Группа переименована.", reply_markup=ikb.get_admin_panel_kb())
+
+
+@router.callback_query(F.data.startswith(CallbackData.ADMIN_GROUP_MGMT_ACTION_PREFIX))
+async def admin_group_mgmt_action(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    action = callback.data.replace(CallbackData.ADMIN_GROUP_MGMT_ACTION_PREFIX, "")
+    if action != "delete":
+        await callback.answer("Неизвестное действие.", show_alert=True)
+        return
+    state_data = await state.get_data()
+    ctx = _get_group_mgmt_context(state_data)
+    ok = delete_group(
+        track=ctx.get("track", "uni"),
+        faculty=ctx.get("faculty", ""),
+        specialty=ctx.get("specialty", ""),
+        course=ctx.get("course", ""),
+        group_name=ctx.get("group_name", ""),
+    )
+    if not ok:
+        await callback.answer("Не удалось удалить группу.", show_alert=True)
+        return
+    await callback.message.edit_text("✅ Группа удалена.", reply_markup=ikb.get_admin_panel_kb())
+    await callback.answer()
+
+
+@router.message(AdminPanel.waiting_for_group_payload)
+async def admin_panel_create_group_payload(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        await message.answer("Нет доступа.")
+        await state.set_state(None)
+        return
+    raw = (message.text or "").strip()
+    parts = [part.strip() for part in raw.split("|")]
+    if len(parts) != 5 or parts[0] not in {"uni", "college"}:
+        await message.answer("Некорректный формат. Ожидается: <uni|college>|<кафедра>|<спец>|<курс>|<группа>")
+        return
+    track, faculty, specialty, course, group_name = parts
+    ok = add_group(
+        track=track,
+        faculty=faculty,
+        specialty=specialty,
+        course=course,
+        group_name=group_name,
+        created_by=message.from_user.id,
+    )
+    if not ok:
+        await message.answer("Не удалось создать группу (возможно, дубликат или пустые поля).")
+        return
+    await state.set_state(None)
+    await message.answer(f"✅ Группа добавлена: {group_name} ({specialty}, курс {course}, {track}).", reply_markup=ikb.get_admin_panel_kb())
+
+
 @router.callback_query(F.data.startswith(CallbackData.ADMIN_USER_PREFIX))
 async def admin_open_user(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
@@ -722,6 +1209,7 @@ async def admin_open_user(callback: types.CallbackQuery):
     profile = get_user_permissions(target_id)
     groups = ", ".join(profile["groups"]) if profile["groups"] else "-"
     specialties = ", ".join(profile["specialties"]) if profile["specialties"] else "-"
+    faculties = ", ".join(profile.get("faculties", [])) if profile.get("faculties") else "-"
     approved = get_approved_user(target_id) or {}
     username = approved.get("tg_username")
     username_text = f"@{username}" if username else "-"
@@ -732,11 +1220,14 @@ async def admin_open_user(callback: types.CallbackQuery):
         f"🔔 Уведомления: {'Да' if profile['can_notify'] else 'Нет'}\n"
         f"✅ Модерация: {'Да' if profile['can_review'] else 'Нет'}\n"
         f"👑 Админ: {'Да' if profile['is_admin'] else 'Нет'}\n"
+        f"🏛 Кафедры: {faculties}\n"
         f"📚 Группы: {groups}\n\n"
         f"🎓 Специальности: {specialties}\n\n"
         "Выберите действие ниже."
     )
-    await callback.message.edit_text(text, reply_markup=ikb.get_admin_user_actions_kb(target_id, profile))
+    profile_view = dict(profile)
+    profile_view["is_grant"] = bool(approved.get("is_grant"))
+    await callback.message.edit_text(text, reply_markup=ikb.get_admin_user_actions_kb(target_id, profile_view))
     await callback.answer()
 
 
@@ -772,7 +1263,10 @@ async def _toggle_permission(callback: types.CallbackQuery, prefix: str, field: 
         kwargs["is_admin_flag"] = not current["is_admin"]
     set_user_permissions(callback.from_user.id, target_id, **kwargs)
     profile = get_user_permissions(target_id)
-    await callback.message.edit_reply_markup(reply_markup=ikb.get_admin_user_actions_kb(target_id, profile))
+    approved = get_approved_user(target_id) or {}
+    profile_view = dict(profile)
+    profile_view["is_grant"] = bool(approved.get("is_grant"))
+    await callback.message.edit_reply_markup(reply_markup=ikb.get_admin_user_actions_kb(target_id, profile_view))
     await callback.answer("Права обновлены.")
 
 
@@ -791,6 +1285,11 @@ async def admin_toggle_admin(callback: types.CallbackQuery):
     await _toggle_permission(callback, CallbackData.ADMIN_TOGGLE_ADMIN_PREFIX, "is_admin")
 
 
+@router.callback_query(F.data.startswith(CallbackData.ADMIN_TOGGLE_GRANT_PREFIX))
+async def admin_toggle_grant(callback: types.CallbackQuery):
+    await callback.answer("Флаг «Грантник» убран из панели выдачи доступов.", show_alert=True)
+
+
 @router.callback_query(F.data.startswith(CallbackData.ADMIN_ASSIGN_SPECS_PREFIX))
 async def admin_assign_specialties(callback: types.CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
@@ -801,16 +1300,235 @@ async def admin_assign_specialties(callback: types.CallbackQuery, state: FSMCont
         await callback.answer("Некорректный ID", show_alert=True)
         return
     target_id = int(user_id_raw)
-    all_specialties = get_all_specialties("ru")
+    await callback.message.edit_text(
+        "🎯 Выберите уровень для назначения специальностей:",
+        reply_markup=types.InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    types.InlineKeyboardButton(
+                        text="🏛 Университет",
+                        callback_data=f"{CallbackData.ADMIN_SPECS_TRACK_PREFIX}{target_id}_uni",
+                    ),
+                    types.InlineKeyboardButton(
+                        text="🏫 Колледж",
+                        callback_data=f"{CallbackData.ADMIN_SPECS_TRACK_PREFIX}{target_id}_college",
+                    ),
+                ],
+                [types.InlineKeyboardButton(text="🔙 К пользователю", callback_data=f"{CallbackData.ADMIN_USER_PREFIX}{target_id}")],
+            ]
+        ),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith(CallbackData.ADMIN_ASSIGN_GROUPS_PREFIX))
+async def admin_assign_groups(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    user_id_raw = callback.data.replace(CallbackData.ADMIN_ASSIGN_GROUPS_PREFIX, "")
+    if not user_id_raw.isdigit():
+        await callback.answer("Некорректный ID", show_alert=True)
+        return
+    target_id = int(user_id_raw)
+    await callback.message.edit_text(
+        "🧩 Выберите уровень для назначения групп:",
+        reply_markup=types.InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    types.InlineKeyboardButton(
+                        text="🏛 Университет",
+                        callback_data=f"{CallbackData.ADMIN_GROUPS_TRACK_PREFIX}{target_id}_uni",
+                    ),
+                    types.InlineKeyboardButton(
+                        text="🏫 Колледж",
+                        callback_data=f"{CallbackData.ADMIN_GROUPS_TRACK_PREFIX}{target_id}_college",
+                    ),
+                ],
+                [types.InlineKeyboardButton(text="🔙 К пользователю", callback_data=f"{CallbackData.ADMIN_USER_PREFIX}{target_id}")],
+            ]
+        ),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith(CallbackData.ADMIN_GROUPS_TRACK_PREFIX))
+async def admin_groups_track(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    payload = callback.data.replace(CallbackData.ADMIN_GROUPS_TRACK_PREFIX, "")
+    user_id_raw, _, track_raw = payload.partition("_")
+    if not user_id_raw.isdigit() or track_raw not in {"uni", "college"}:
+        await callback.answer("Некорректные параметры", show_alert=True)
+        return
+    target_id = int(user_id_raw)
+    track = "college" if track_raw == "college" else "uni"
+    current = get_user_permissions(target_id)
+    allowed_specialties = list(current.get("specialties", []))
+    all_groups = list_groups_for_specialties(track=track, specialties=allowed_specialties)
+    if not all_groups:
+        await callback.answer("Сначала назначьте сотруднику доверенные специальности.", show_alert=True)
+        return
+    selected_indexes = {idx for idx, value in enumerate(all_groups) if value in set(current.get("groups", []))}
+    state_data = await state.get_data()
+    selected_map = _get_admin_groups_selected_map(state_data)
+    selected_map[str(target_id)] = sorted(selected_indexes)
+    track_map = _get_admin_groups_track_map(state_data)
+    track_map[str(target_id)] = track
+    await state.update_data(**{ADMIN_GROUPS_SELECTED_KEY: selected_map, ADMIN_GROUPS_TRACK_KEY: track_map})
+    page_items, page, total_pages = _groups_page_payload(0, all_groups)
+    await callback.message.edit_text(
+        f"🧩 Выберите группы ({'Колледж' if track == 'college' else 'Университет'}). Можно отметить несколько.",
+        reply_markup=ikb.get_admin_groups_kb(
+            target_user_id=target_id,
+            groups=page_items,
+            selected_indexes=selected_indexes,
+            page=page,
+            total_pages=total_pages,
+        ),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith(CallbackData.ADMIN_GROUPS_PAGE_PREFIX))
+async def admin_groups_page(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    payload = callback.data.replace(CallbackData.ADMIN_GROUPS_PAGE_PREFIX, "")
+    user_id_raw, _, page_raw = payload.partition("_")
+    if not user_id_raw.isdigit() or not page_raw.isdigit():
+        await callback.answer("Некорректные параметры", show_alert=True)
+        return
+    target_id = int(user_id_raw)
+    page = int(page_raw)
+    state_data = await state.get_data()
+    track = _selected_groups_track_for_user(state_data, target_id)
+    current = get_user_permissions(target_id)
+    all_groups = list_groups_for_specialties(track=track, specialties=list(current.get("specialties", [])))
+    selected_indexes = _selected_groups_for_user(state_data, target_id)
+    page_items, safe_page, total_pages = _groups_page_payload(page, all_groups)
+    await callback.message.edit_reply_markup(
+        reply_markup=ikb.get_admin_groups_kb(
+            target_user_id=target_id,
+            groups=page_items,
+            selected_indexes=selected_indexes,
+            page=safe_page,
+            total_pages=total_pages,
+        )
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith(CallbackData.ADMIN_GROUPS_TOGGLE_PREFIX))
+async def admin_groups_toggle(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    payload = callback.data.replace(CallbackData.ADMIN_GROUPS_TOGGLE_PREFIX, "")
+    user_id_raw, _, index_raw = payload.partition("_")
+    if not user_id_raw.isdigit() or not index_raw.isdigit():
+        await callback.answer("Некорректные параметры", show_alert=True)
+        return
+    target_id = int(user_id_raw)
+    toggled_index = int(index_raw)
+    state_data = await state.get_data()
+    track = _selected_groups_track_for_user(state_data, target_id)
+    current = get_user_permissions(target_id)
+    all_groups = list_groups_for_specialties(track=track, specialties=list(current.get("specialties", [])))
+    if toggled_index < 0 or toggled_index >= len(all_groups):
+        await callback.answer("Группа не найдена.", show_alert=True)
+        return
+    selected_map = _get_admin_groups_selected_map(state_data)
+    selected_indexes = _selected_groups_for_user(state_data, target_id)
+    if toggled_index in selected_indexes:
+        selected_indexes.remove(toggled_index)
+    else:
+        selected_indexes.add(toggled_index)
+    selected_map[str(target_id)] = sorted(selected_indexes)
+    await state.update_data(**{ADMIN_GROUPS_SELECTED_KEY: selected_map})
+    page = toggled_index // ADMIN_GROUPS_PAGE_SIZE
+    page_items, safe_page, total_pages = _groups_page_payload(page, all_groups)
+    await callback.message.edit_reply_markup(
+        reply_markup=ikb.get_admin_groups_kb(
+            target_user_id=target_id,
+            groups=page_items,
+            selected_indexes=selected_indexes,
+            page=safe_page,
+            total_pages=total_pages,
+        )
+    )
+    await callback.answer("Обновлено")
+
+
+@router.callback_query(F.data.startswith(CallbackData.ADMIN_GROUPS_APPLY_PREFIX))
+async def admin_groups_apply(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    user_id_raw = callback.data.replace(CallbackData.ADMIN_GROUPS_APPLY_PREFIX, "")
+    if not user_id_raw.isdigit():
+        await callback.answer("Некорректный ID", show_alert=True)
+        return
+    target_id = int(user_id_raw)
+    state_data = await state.get_data()
+    track = _selected_groups_track_for_user(state_data, target_id)
+    current = get_user_permissions(target_id)
+    all_groups = list_groups_for_specialties(track=track, specialties=list(current.get("specialties", [])))
+    selected_indexes = sorted(_selected_groups_for_user(state_data, target_id))
+    selected_groups = [all_groups[idx] for idx in selected_indexes if 0 <= idx < len(all_groups)]
+    set_user_permissions(callback.from_user.id, target_id, groups=selected_groups, can_notify=True, can_review=True)
+    await callback.message.edit_text(
+        f"✅ Группы назначены ({'Колледж' if track == 'college' else 'Университет'}):\n"
+        f"{', '.join(selected_groups) if selected_groups else '-'}",
+        reply_markup=ikb.get_admin_user_actions_kb(
+            target_id,
+            {**get_user_permissions(target_id), "is_grant": bool((get_approved_user(target_id) or {}).get("is_grant"))},
+        ),
+    )
+    await callback.answer("Сохранено.")
+
+
+@router.callback_query(F.data.startswith(CallbackData.ADMIN_GROUPS_RESET_PREFIX))
+async def admin_groups_reset(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    user_id_raw = callback.data.replace(CallbackData.ADMIN_GROUPS_RESET_PREFIX, "")
+    if not user_id_raw.isdigit():
+        await callback.answer("Некорректный ID", show_alert=True)
+        return
+    target_id = int(user_id_raw)
+    state_data = await state.get_data()
+    selected_map = _get_admin_groups_selected_map(state_data)
+    selected_map[str(target_id)] = []
+    await state.update_data(**{ADMIN_GROUPS_SELECTED_KEY: selected_map})
+    await callback.answer("Выбор групп сброшен.")
+@router.callback_query(F.data.startswith(CallbackData.ADMIN_SPECS_TRACK_PREFIX))
+async def admin_specs_track(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    payload = callback.data.replace(CallbackData.ADMIN_SPECS_TRACK_PREFIX, "")
+    user_id_raw, _, track_raw = payload.partition("_")
+    if not user_id_raw.isdigit() or track_raw not in {"uni", "college"}:
+        await callback.answer("Некорректные параметры", show_alert=True)
+        return
+    target_id = int(user_id_raw)
+    track = "college" if track_raw == "college" else "uni"
+    all_specialties = get_all_specialties("ru", track=track)
     current = get_user_permissions(target_id)
     selected_indexes = {idx for idx, value in enumerate(all_specialties) if value in set(current.get("specialties", []))}
     state_data = await state.get_data()
     selected_map = _get_admin_selected_map(state_data)
     selected_map[str(target_id)] = sorted(selected_indexes)
-    await state.update_data(**{ADMIN_SPECS_SELECTED_KEY: selected_map})
+    track_map = _get_admin_track_map(state_data)
+    track_map[str(target_id)] = track
+    await state.update_data(**{ADMIN_SPECS_SELECTED_KEY: selected_map, ADMIN_SPECS_TRACK_KEY: track_map})
     page_items, page, total_pages = _specialties_page_payload(0, all_specialties)
     await callback.message.edit_text(
-        "🎯 Выберите специальности для пользователя. Можно отметить несколько.",
+        f"🎯 Выберите специальности ({'Колледж' if track == 'college' else 'Университет'}). Можно отметить несколько.",
         reply_markup=ikb.get_admin_specialties_kb(
             target_user_id=target_id,
             specialties=page_items,
@@ -834,8 +1552,9 @@ async def admin_specs_page(callback: types.CallbackQuery, state: FSMContext):
         return
     target_id = int(user_id_raw)
     page = int(page_raw)
-    all_specialties = get_all_specialties("ru")
     state_data = await state.get_data()
+    track = _selected_track_for_user(state_data, target_id)
+    all_specialties = get_all_specialties("ru", track=track)
     selected_indexes = _selected_for_user(state_data, target_id)
     page_items, safe_page, total_pages = _specialties_page_payload(page, all_specialties)
     await callback.message.edit_reply_markup(
@@ -862,11 +1581,12 @@ async def admin_specs_toggle(callback: types.CallbackQuery, state: FSMContext):
         return
     target_id = int(user_id_raw)
     toggled_index = int(index_raw)
-    all_specialties = get_all_specialties("ru")
+    state_data = await state.get_data()
+    track = _selected_track_for_user(state_data, target_id)
+    all_specialties = get_all_specialties("ru", track=track)
     if toggled_index < 0 or toggled_index >= len(all_specialties):
         await callback.answer("Специальность не найдена.", show_alert=True)
         return
-    state_data = await state.get_data()
     selected_map = _get_admin_selected_map(state_data)
     selected_indexes = _selected_for_user(state_data, target_id)
     if toggled_index in selected_indexes:
@@ -899,8 +1619,9 @@ async def admin_specs_confirm(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer("Некорректный ID", show_alert=True)
         return
     target_id = int(user_id_raw)
-    all_specialties = get_all_specialties("ru")
     state_data = await state.get_data()
+    track = _selected_track_for_user(state_data, target_id)
+    all_specialties = get_all_specialties("ru", track=track)
     selected_indexes = sorted(_selected_for_user(state_data, target_id))
     selected_specialties = [all_specialties[idx] for idx in selected_indexes if 0 <= idx < len(all_specialties)]
     approved = get_approved_user(target_id) or {}
@@ -909,6 +1630,7 @@ async def admin_specs_confirm(callback: types.CallbackQuery, state: FSMContext):
         f"👤 Пользователь: {approved.get('fio', '-')}",
         f"🆔 Telegram ID: {target_id}",
         f"🔗 Username: @{approved.get('tg_username')}" if approved.get("tg_username") else "🔗 Username: -",
+        f"🎓 Уровень: {'Колледж' if track == 'college' else 'Университет'}",
         f"🎓 Специальности ({len(selected_specialties)}):",
         ", ".join(selected_specialties) if selected_specialties else "-",
     ]
@@ -926,8 +1648,9 @@ async def admin_specs_apply(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer("Некорректный ID", show_alert=True)
         return
     target_id = int(user_id_raw)
-    all_specialties = get_all_specialties("ru")
     state_data = await state.get_data()
+    track = _selected_track_for_user(state_data, target_id)
+    all_specialties = get_all_specialties("ru", track=track)
     selected_indexes = sorted(_selected_for_user(state_data, target_id))
     selected_specialties = [all_specialties[idx] for idx in selected_indexes if 0 <= idx < len(all_specialties)]
     set_user_permissions(
@@ -943,12 +1666,16 @@ async def admin_specs_apply(callback: types.CallbackQuery, state: FSMContext):
         f"👤 Пользователь: {approved.get('fio', '-')}",
         f"🆔 Telegram ID: {target_id}",
         f"🔗 Username: @{approved.get('tg_username')}" if approved.get("tg_username") else "🔗 Username: -",
+        f"🎓 Уровень: {'Колледж' if track == 'college' else 'Университет'}",
         f"🎓 Специальности ({len(selected_specialties)}):",
         ", ".join(selected_specialties) if selected_specialties else "-",
     ]
     await callback.message.edit_text(
         "\n".join(info_lines),
-        reply_markup=ikb.get_admin_user_actions_kb(target_id, get_user_permissions(target_id)),
+        reply_markup=ikb.get_admin_user_actions_kb(
+            target_id,
+            {**get_user_permissions(target_id), "is_grant": bool((get_approved_user(target_id) or {}).get("is_grant"))},
+        ),
     )
     await callback.answer()
 
@@ -970,7 +1697,10 @@ async def admin_specs_reset(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer("Выбор сброшен.")
     await callback.message.edit_text(
         "Выбор специальностей сброшен. Вы можете начать заново.",
-        reply_markup=ikb.get_admin_user_actions_kb(target_id, get_user_permissions(target_id)),
+        reply_markup=ikb.get_admin_user_actions_kb(
+            target_id,
+            {**get_user_permissions(target_id), "is_grant": bool((get_approved_user(target_id) or {}).get("is_grant"))},
+        ),
     )
 
 
@@ -990,3 +1720,57 @@ async def admin_set_groups(message: types.Message):
         return
     set_user_permissions(message.from_user.id, target_id, groups=groups)
     await message.answer(f"✅ Группы для {target_id} обновлены: {', '.join(groups)}")
+
+
+@router.message(Command("set_faculties"))
+async def admin_set_faculties(message: types.Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("Нет доступа.")
+        return
+    parts = (message.text or "").split(maxsplit=2)
+    if len(parts) < 3 or not parts[1].isdigit():
+        await message.answer("Формат: /set_faculties <user_id> <кафедра1,кафедра2|*>")
+        return
+    target_id = int(parts[1])
+    faculties = [item.strip() for item in parts[2].split(",") if item.strip()]
+    if not faculties:
+        await message.answer("Нужно указать хотя бы одну кафедру или *")
+        return
+    known = set(get_all_faculties("ru"))
+    if "*" not in faculties:
+        unknown = [item for item in faculties if item not in known]
+        if unknown:
+            await message.answer(f"Неизвестные кафедры: {', '.join(unknown)}")
+            return
+    set_user_permissions(message.from_user.id, target_id, faculties=faculties)
+    await message.answer(f"✅ Кафедры для {target_id} обновлены: {', '.join(faculties)}")
+
+
+@router.message(Command("create_group"))
+async def admin_create_group(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        await message.answer("Нет доступа.")
+        return
+    payload = (message.text or "").replace("/create_group", "", 1).strip()
+    # Формат: /create_group track|faculty|specialty|course|group
+    chunks = [item.strip() for item in payload.split("|")]
+    if len(chunks) != 5:
+        await message.answer("Формат: /create_group <uni|college>|<кафедра>|<специальность>|<курс>|<группа>")
+        return
+    track, faculty, specialty, course, group_name = chunks
+    if track not in {"uni", "college"}:
+        await message.answer("Track должен быть uni или college.")
+        return
+    ok = add_group(
+        track=track,
+        faculty=faculty,
+        specialty=specialty,
+        course=course,
+        group_name=group_name,
+        created_by=message.from_user.id,
+    )
+    if not ok:
+        await message.answer("Не удалось добавить группу (возможно, уже существует или неполные данные).")
+        return
+    await state.update_data(last_created_group=group_name)
+    await message.answer(f"✅ Группа добавлена: {group_name} ({specialty}, курс {course}, {track}).")

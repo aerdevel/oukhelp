@@ -8,17 +8,22 @@
       ],
       "is_admin": true,
       "specialties": [
-        "*"
-      ]
+        "6B11476 - Социальная работа"
+      ],
+      "faculties": []
     },
     "1216962667": {
       "can_notify": true,
       "can_review": true,
-      "groups": [],
-      "specialties": [
-        "6B11380 - Вычислительная техника и программное обеспечение"
+      "groups": [
+        "ВТПО 23-1"
       ],
-      "is_admin": false
+      "specialties": [
+        "6B11380 - Вычислительная техника и программное обеспечение",
+        "6B11476 - Социальная работа"
+      ],
+      "is_admin": false,
+      "faculties": []
     }
   }
 }

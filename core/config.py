@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     review_chat_id: int | None = None
     priemka_id: int = Field(..., gt=0)
     psycholog_chat_id: int | None = None
+    psycholog_admin_id: int | None = None
     log_level: str = "INFO"
     registration_retention_days: int = Field(default=180, ge=1, le=3650)
     privacy_policy_url: str = ""
@@ -23,8 +24,22 @@ class Settings(BaseSettings):
     fallback_excel_path: str = "data/admissions_registry_fallback.xlsx"
     accounts_path: str = "data/accounts_registry.xlsx"
     fallback_accounts_path: str = "data/accounts_registry_fallback.xlsx"
+    college_excel_path: str = "data/college_admissions_registry.xlsx"
+    fallback_college_excel_path: str = "data/college_admissions_registry_fallback.xlsx"
+    college_accounts_path: str = "data/college_accounts_registry.xlsx"
+    fallback_college_accounts_path: str = "data/college_accounts_registry_fallback.xlsx"
 
-    @field_validator("excel_path", "fallback_excel_path", "accounts_path", "fallback_accounts_path", mode="before")
+    @field_validator(
+        "excel_path",
+        "fallback_excel_path",
+        "accounts_path",
+        "fallback_accounts_path",
+        "college_excel_path",
+        "fallback_college_excel_path",
+        "college_accounts_path",
+        "fallback_college_accounts_path",
+        mode="before",
+    )
     @classmethod
     def _normalize_path_value(cls, value: str) -> str:
         """
@@ -64,6 +79,22 @@ class Settings(BaseSettings):
     @property
     def fallback_accounts_registry_path(self) -> Path:
         return Path(self.fallback_accounts_path)
+
+    @property
+    def college_excel_registry_path(self) -> Path:
+        return Path(self.college_excel_path)
+
+    @property
+    def fallback_college_excel_registry_path(self) -> Path:
+        return Path(self.fallback_college_excel_path)
+
+    @property
+    def college_accounts_registry_path(self) -> Path:
+        return Path(self.college_accounts_path)
+
+    @property
+    def fallback_college_accounts_registry_path(self) -> Path:
+        return Path(self.fallback_college_accounts_path)
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -4,6 +4,7 @@ from aiogram.types import User
 from core.config import settings
 from core.curator_const import get_responsible_ids
 from keyboards.inline import get_admin_approve_kb, get_documents_review_kb
+from utils.number_format import format_int
 from utils.privacy import mask_phone, mask_username
 
 
@@ -39,7 +40,9 @@ async def notify_responsible_new_registration(bot: Bot, user_data: dict):
     # Формирование текста уведомления.
     username_text = f"@{tg_username}" if tg_username else "-"
     user_data["responsible_ids"] = target_chat_ids
+    track = "Колледж" if str(user_data.get("admission_track", "uni")) == "college" else "Университет"
     text = (
+        f"🎓 Уровень: {track}\n"
         f"👤 Telegram: {telegram_name}\n"
         f"🆔 Telegram ID: {tg_user_id or '-'}\n"
         f"🔗 Username: {username_text}\n"
@@ -132,8 +135,10 @@ async def send_documents_package_for_review(bot: Bot, package: dict):
     excel_write_icon = "✅" if bool(package.get("excel_applicant_saved")) else "❌"
     applied_discounts = package.get("calc_applied_discounts") or []
     discounts_text = ", ".join(str(item) for item in applied_discounts) if applied_discounts else "-"
+    track = "Колледж" if str(package.get("admission_track", "uni")) == "college" else "Университет"
     summary = (
         "📦 Новый пакет документов\n\n"
+        f"🎓 Уровень: {track}\n"
         f"🔁 Попытка отправки перечня: #{submit_attempt}\n"
         f"📒 Excel ранее: {excel_prev_icon}\n"
         f"💾 Excel запись: {excel_write_icon}\n"
@@ -148,8 +153,8 @@ async def send_documents_package_for_review(bot: Bot, package: dict):
         f"📚 Группа: {package.get('group', '-')}\n"
         f"💸 Скидка: {int(float(package.get('calc_discount_rate', 0.0)) * 100)}%\n"
         f"🏷 Льготы: {discounts_text}\n"
-        f"💰 Цена (1 год): {package.get('calc_year_price', '-')}\n"
-        f"🏛 Цена (4 года): {package.get('calc_total_price', '-')}\n"
+        f"💰 Цена (1 год): {format_int(package.get('calc_year_price', '-'))}\n"
+        f"🏛 Цена (4 года): {format_int(package.get('calc_total_price', '-'))}\n"
         "Нажмите на нужный документ в кнопках ниже, чтобы открыть его прямо в чате."
     )
     kb = get_documents_review_kb(tg_user_id)

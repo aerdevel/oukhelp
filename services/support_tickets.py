@@ -1,5 +1,5 @@
 import json
-import random
+import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -7,9 +7,12 @@ from typing import Any
 from aiogram import Bot
 
 from core.config import settings
+from utils.datetime_utils import parse_iso_utc
 from utils.file_utils import read_json, write_json
 
 STORE_PATH = Path("data/support_tickets.json")
+USER_PING_HOURS = 24
+AUTO_CLOSE_HOURS = 48
 
 
 def _default_store() -> dict[str, Any]:
@@ -19,6 +22,7 @@ def _default_store() -> dict[str, Any]:
         "tickets": {},
         "message_links": {},
         "blocked_actors": {},
+        "staff_registry": {},
     }
 
 
@@ -29,6 +33,7 @@ def _read_store() -> dict[str, Any]:
     data.setdefault("tickets", {})
     data.setdefault("message_links", {})
     data.setdefault("blocked_actors", {})
+    data.setdefault("staff_registry", {})
     return data
 
 
@@ -40,12 +45,20 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _hours_from_now_iso(hours: int) -> str:
+    return (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat()
+
+
+def _parse_utc(raw_value: Any) -> datetime | None:
+    return parse_iso_utc(str(raw_value or ""))
+
+
 def _ensure_alias(data: dict[str, Any], user_id: int) -> str:
     key = str(user_id)
     aliases = data["user_aliases"]
     if key in aliases:
         return aliases[key]
-    aliases[key] = str(random.randint(100000, 999999))
+    aliases[key] = str(secrets.randbelow(900000) + 100000)
     return aliases[key]
 
 
@@ -108,7 +121,22 @@ def open_or_get_ticket(user_id: int, topic_code: str, anonymous: bool) -> dict[s
 
 
 def get_ticket(ticket_id: str) -> dict[str, Any] | None:
-    return _read_store()["tickets"].get(str(ticket_id))
+    data = _read_store()
+    direct = data["tickets"].get(str(ticket_id))
+    if direct:
+        return direct
+    raw = str(ticket_id or "").strip()
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    if not digits:
+        return None
+    if digits in data["tickets"]:
+        return data["tickets"][digits]
+    for key, row in data["tickets"].items():
+        if "".join(ch for ch in str(key) if ch.isdigit()) == digits:
+            return row
+        if "".join(ch for ch in str(row.get("ticket_id", "")) if ch.isdigit()) == digits:
+            return row
+    return None
 
 
 def get_ticket_by_message_id(chat_message_id: int) -> dict[str, Any] | None:
@@ -168,7 +196,7 @@ def append_psychologist_message(ticket_id: str, psychologist_id: int, text: str)
     stats[key] = int(stats.get(key, 0)) + 1
     now_iso = _now_iso()
     ticket["last_psychologist_reply_at"] = now_iso
-    ticket["next_user_ping_at"] = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
+    ticket["next_user_ping_at"] = _hours_from_now_iso(USER_PING_HOURS)
     ticket["status"] = "waiting_user"
     ticket["updated_at"] = now_iso
     _write_store(data)
@@ -209,6 +237,16 @@ def format_staff_stats(ticket: dict[str, Any]) -> str:
     return ", ".join(rows)
 
 
+def register_staff_profile(staff_id: int, *, username: str | None = None, full_name: str | None = None) -> None:
+    data = _read_store()
+    registry = data.setdefault("staff_registry", {})
+    registry[str(staff_id)] = {
+        "username": (username or "").strip(),
+        "full_name": (full_name or "").strip(),
+    }
+    _write_store(data)
+
+
 def append_user_payload(ticket_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
     data = _read_store()
     ticket = data["tickets"].get(str(ticket_id))
@@ -245,9 +283,11 @@ def append_staff_payload(
         "full_name": (staff_full_name or "").strip(),
     }
     ticket["last_psychologist_reply_at"] = _now_iso()
-    ticket["next_user_ping_at"] = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
+    ticket["next_user_ping_at"] = _hours_from_now_iso(USER_PING_HOURS)
     ticket["status"] = "waiting_user"
     ticket["updated_at"] = _now_iso()
+    registry = data.setdefault("staff_registry", {})
+    registry[key] = profiles[key]
     _write_store(data)
     return ticket
 
@@ -270,9 +310,177 @@ def set_ticket_rating_comment(ticket_id: str, comment: str) -> dict[str, Any] | 
     if not ticket:
         return None
     ticket["rating_comment"] = str(comment).strip()
+    ticket["quality_score"] = calculate_ticket_quality_score(ticket)
     ticket["updated_at"] = _now_iso()
     _write_store(data)
     return ticket
+
+
+def calculate_ticket_quality_score(ticket: dict[str, Any]) -> int:
+    score = 0
+    rating = int(ticket.get("rating") or 0)
+    score += max(0, min(10, rating)) * 6
+
+    replies = sum(1 for row in ticket.get("messages", []) if row.get("from") == "psychologist")
+    score += min(replies, 10) * 2
+
+    if ticket.get("closed_by_user") is True:
+        score += 10
+
+    created_at = _parse_utc(ticket.get("created_at"))
+    first_staff_reply = None
+    for row in ticket.get("messages", []):
+        if row.get("from") == "psychologist":
+            first_staff_reply = _parse_utc(row.get("at"))
+            if first_staff_reply:
+                break
+    if created_at and first_staff_reply:
+        hours = (first_staff_reply - created_at).total_seconds() / 3600
+        if hours <= 1:
+            score += 10
+        elif hours <= 6:
+            score += 7
+        elif hours <= 24:
+            score += 4
+    return int(score)
+
+
+def list_staff_registry() -> list[tuple[int, dict[str, str]]]:
+    data = _read_store()
+    registry = data.get("staff_registry", {})
+    items: list[tuple[int, dict[str, str]]] = []
+    for raw_id, profile in registry.items():
+        if not str(raw_id).isdigit():
+            continue
+        items.append((int(raw_id), {"username": str(profile.get("username", "")), "full_name": str(profile.get("full_name", ""))}))
+    return sorted(items, key=lambda item: (item[1].get("full_name") or item[1].get("username") or f"id{item[0]}").lower())
+
+
+def assign_ticket(ticket_id: str, staff_id: int, assigned_by: int) -> dict[str, Any] | None:
+    data = _read_store()
+    key = str(ticket_id)
+    ticket = data["tickets"].get(key)
+    if not ticket:
+        digits = "".join(ch for ch in str(ticket_id or "") if ch.isdigit())
+        if digits and digits in data["tickets"]:
+            key = digits
+            ticket = data["tickets"].get(key)
+    if not ticket:
+        for k, row in data["tickets"].items():
+            row_digits = "".join(ch for ch in str(row.get("ticket_id", "")) if ch.isdigit())
+            if row_digits and row_digits == "".join(ch for ch in str(ticket_id or "") if ch.isdigit()):
+                key = str(k)
+                ticket = row
+                break
+    if not ticket:
+        return None
+    ticket["ticket_id"] = str(key)
+    ticket["assigned_staff_id"] = int(staff_id)
+    ticket["assigned_staff_ids"] = [int(staff_id)]
+    ticket["assigned_by"] = int(assigned_by)
+    ticket["assigned_at"] = _now_iso()
+    ticket["updated_at"] = _now_iso()
+    _write_store(data)
+    return ticket
+
+
+def set_ticket_assignees(ticket_id: str, staff_ids: list[int], assigned_by: int) -> dict[str, Any] | None:
+    """Назначает тикет нескольким психологам (список ID)."""
+    data = _read_store()
+    ticket = get_ticket(str(ticket_id))
+    if not ticket:
+        return None
+    key = str(ticket.get("ticket_id") or ticket_id)
+    ids = sorted({int(x) for x in staff_ids if int(x) > 0})
+    ticket["ticket_id"] = key
+    ticket["assigned_staff_ids"] = ids
+    ticket["assigned_staff_id"] = int(ids[0]) if ids else 0
+    ticket["assigned_by"] = int(assigned_by)
+    ticket["assigned_at"] = _now_iso()
+    ticket["updated_at"] = _now_iso()
+    # Сохраняем обратно по правильному ключу
+    data["tickets"][key] = ticket
+    _write_store(data)
+    return ticket
+
+
+def list_blocked_actors() -> list[dict[str, Any]]:
+    """Возвращает список заблокированных акторов для админ-UI."""
+    data = _read_store()
+    rows: list[dict[str, Any]] = []
+    for key, payload in (data.get("blocked_actors") or {}).items():
+        until_raw = payload.get("until")
+        until_dt = _parse_utc(until_raw) if until_raw else None
+        if until_dt and until_dt <= datetime.now(timezone.utc):
+            continue
+        rows.append(
+            {
+                "key": str(key),
+                "mode": str(payload.get("mode") or ("forever" if not until_raw else "")),
+                "until": until_raw,
+                "blocked_at": payload.get("blocked_at"),
+            }
+        )
+    return rows
+
+
+def unblock_actor_by_key(actor_key: str, admin_id: int) -> bool:
+    """Разблокировать по ключу вида anon:XXXXXX или user:YYYY."""
+    data = _read_store()
+    key = str(actor_key or "")
+    existed = key in (data.get("blocked_actors") or {})
+    data.setdefault("blocked_actors", {}).pop(key, None)
+    _write_store(data)
+    return existed
+
+
+def build_staff_performance(period: str = "all") -> list[dict[str, Any]]:
+    data = _read_store()
+    now = datetime.now(timezone.utc)
+    thresholds = {
+        "day": now - timedelta(days=1),
+        "week": now - timedelta(days=7),
+        "month": now - timedelta(days=30),
+        "year": now - timedelta(days=365),
+    }
+    threshold = thresholds.get(period)
+    aggregate: dict[str, dict[str, Any]] = {}
+    for ticket in data["tickets"].values():
+        if ticket.get("topic_code") != "psy":
+            continue
+        closed_at = _parse_utc(ticket.get("closed_at")) or _parse_utc(ticket.get("updated_at"))
+        if threshold and (not closed_at or closed_at < threshold):
+            continue
+        ticket_score = calculate_ticket_quality_score(ticket)
+        rating = int(ticket.get("rating") or 0)
+        stats = ticket.get("psychologist_stats", {})
+        profiles = ticket.get("staff_profiles", {})
+        for staff_id, replies in stats.items():
+            bucket = aggregate.setdefault(
+                str(staff_id),
+                {"staff_id": int(staff_id), "replies": 0, "tickets": 0, "rating_sum": 0, "rating_count": 0, "quality_points": 0, "profile": {}},
+            )
+            bucket["replies"] += int(replies or 0)
+            bucket["tickets"] += 1
+            if rating > 0:
+                bucket["rating_sum"] += rating
+                bucket["rating_count"] += 1
+            bucket["quality_points"] += ticket_score
+            bucket["profile"] = profiles.get(str(staff_id), bucket["profile"])
+    rows = []
+    for item in aggregate.values():
+        avg_rating = round(item["rating_sum"] / item["rating_count"], 2) if item["rating_count"] else 0.0
+        rows.append(
+            {
+                "staff_id": item["staff_id"],
+                "replies": item["replies"],
+                "tickets": item["tickets"],
+                "avg_rating": avg_rating,
+                "quality_points": item["quality_points"],
+                "profile": item["profile"],
+            }
+        )
+    return sorted(rows, key=lambda row: (row["quality_points"], row["replies"]), reverse=True)
 
 
 def user_tickets(user_id: int) -> list[dict[str, Any]]:
@@ -304,9 +512,8 @@ def is_actor_blocked(user_id: int, topic_code: str, anonymous: bool) -> tuple[bo
     raw_until = blocked.get("until")
     if not raw_until:
         return True, "навсегда"
-    try:
-        until = datetime.fromisoformat(str(raw_until).replace("Z", "+00:00")).astimezone(timezone.utc)
-    except ValueError:
+    until = _parse_utc(raw_until)
+    if until is None:
         return True, "навсегда"
     if until <= datetime.now(timezone.utc):
         data["blocked_actors"].pop(key, None)
@@ -317,13 +524,15 @@ def is_actor_blocked(user_id: int, topic_code: str, anonymous: bool) -> tuple[bo
 
 def block_actor_by_ticket(ticket_id: str, mode: str, admin_id: int) -> dict[str, Any] | None:
     data = _read_store()
-    ticket = data["tickets"].get(str(ticket_id))
+    ticket = get_ticket(str(ticket_id))
     if not ticket:
         return None
+    # Нормализуем ключ, чтобы корректно обновлять по актуальному ID
+    ticket_id_key = str(ticket.get("ticket_id") or ticket_id)
     key = _actor_key(ticket)
     until = None
     if mode == "24h":
-        until = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
+        until = _hours_from_now_iso(USER_PING_HOURS)
     data.setdefault("blocked_actors", {})[key] = {
         "until": until,
         "mode": mode,
@@ -331,6 +540,19 @@ def block_actor_by_ticket(ticket_id: str, mode: str, admin_id: int) -> dict[str,
         "blocked_at": _now_iso(),
     }
     _write_store(data)
+    return ticket
+
+
+def unblock_actor_by_ticket(ticket_id: str, admin_id: int) -> dict[str, Any] | None:
+    data = _read_store()
+    ticket = get_ticket(str(ticket_id))
+    if not ticket:
+        return None
+    key = _actor_key(ticket)
+    data.setdefault("blocked_actors", {}).pop(key, None)
+    _write_store(data)
+    ticket["unblocked_by"] = int(admin_id)
+    ticket["unblocked_at"] = _now_iso()
     return ticket
 
 
@@ -356,9 +578,8 @@ def due_user_pings(limit: int = 50) -> list[dict[str, Any]]:
         raw = ticket.get("next_user_ping_at")
         if not raw or ticket.get("status") != "waiting_user":
             continue
-        try:
-            due_at = datetime.fromisoformat(str(raw).replace("Z", "+00:00")).astimezone(timezone.utc)
-        except ValueError:
+        due_at = _parse_utc(raw)
+        if due_at is None:
             continue
         if due_at <= now:
             due.append(ticket)
@@ -372,7 +593,7 @@ def postpone_user_ping(ticket_id: str, hours: int = 24) -> None:
     ticket = data["tickets"].get(str(ticket_id))
     if not ticket:
         return
-    ticket["next_user_ping_at"] = (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat()
+    ticket["next_user_ping_at"] = _hours_from_now_iso(hours)
     ticket["updated_at"] = _now_iso()
     _write_store(data)
 
@@ -389,14 +610,14 @@ async def process_due_user_pings(bot: Bot) -> int:
                 user_id,
                 f"Напоминание по тикету #{ticket_id}: психолог уже ответил. Если вопрос решен, закройте тикет и поставьте оценку.",
             )
-            postpone_user_ping(ticket_id, 24)
+            postpone_user_ping(ticket_id, USER_PING_HOURS)
             sent += 1
         except Exception:
-            postpone_user_ping(ticket_id, 24)
+            postpone_user_ping(ticket_id, USER_PING_HOURS)
     return sent
 
 
-async def process_due_auto_close(bot: Bot, hours: int = 48, limit: int = 50) -> int:
+async def process_due_auto_close(bot: Bot, hours: int = AUTO_CLOSE_HOURS, limit: int = 50) -> int:
     """
     Автоматически закрывает тикеты, если после ответа сотрудника
     пользователь не ответил в течение `hours`.
@@ -411,9 +632,8 @@ async def process_due_auto_close(bot: Bot, hours: int = 48, limit: int = 50) -> 
         raw = ticket.get("last_psychologist_reply_at")
         if not raw:
             continue
-        try:
-            last_reply = datetime.fromisoformat(str(raw).replace("Z", "+00:00")).astimezone(timezone.utc)
-        except ValueError:
+        last_reply = _parse_utc(raw)
+        if last_reply is None:
             continue
         if (now - last_reply) < timedelta(hours=hours):
             continue
@@ -440,7 +660,7 @@ async def process_due_auto_close(bot: Bot, hours: int = 48, limit: int = 50) -> 
         try:
             await bot.send_message(
                 int(ticket["user_id"]),
-                f"Тикет #{ticket['ticket_id']} автоматически закрыт из-за отсутствия ответа в течение 48 часов.",
+                f"Тикет #{ticket['ticket_id']} автоматически закрыт из-за отсутствия ответа в течение {hours} часов.",
             )
         except Exception:
             pass

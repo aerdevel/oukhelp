@@ -11,3 +11,6 @@ def setup_logger():
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         force=True,
     )
+    # Снижаем шум от внешних библиотек в прод-логах.
+    logging.getLogger("aiogram").setLevel(logging.WARNING)
+    logging.getLogger("aiohttp").setLevel(logging.WARNING)
