@@ -15,3 +15,6 @@
 {"timestamp": "2026-05-06T15:45:10.500077+00:00", "event_type": "registration_approved", "actor_id": 5394280567, "payload": {"phone": "+77004287470", "tg_user_id": 5394280567}}
 {"timestamp": "2026-05-06T16:40:42.316842+00:00", "event_type": "registration_approved", "actor_id": 5394280567, "payload": {"phone": "+77004287470", "tg_user_id": 5394280567}}
 {"timestamp": "2026-05-06T17:09:05.775449+00:00", "event_type": "registration_approved", "actor_id": 5394280567, "payload": {"phone": "+77004287470", "tg_user_id": 5394280567}}
+{"timestamp": "2026-05-14T08:11:31.790175+00:00", "event_type": "registration_approved", "actor_id": 5394280567, "payload": {"phone": "+77003272517", "tg_user_id": 7939104831}}
+{"timestamp": "2026-05-14T08:12:59.502808+00:00", "event_type": "registration_approved", "actor_id": 7939104831, "payload": {"phone": "+77004287470", "tg_user_id": 5394280567}}
+{"timestamp": "2026-05-14T08:48:15.618943+00:00", "event_type": "documents_approved", "actor_id": 5394280567, "payload": {"tg_user_id": 5394280567, "review_chat_id": -1003966070243}}

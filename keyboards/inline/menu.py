@@ -1,11 +1,83 @@
 import re
 
+from math import ceil
+
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from core.callbacks import CallbackData
 from core.resources.text_file.catalog import get_specialties_by_department
 from core.resources.text_file.menus import BUTTONS
+from utils.i18n import tr
+
+# Сколько специальностей на одной странице инлайн-клавиатуры (Telegram ограничивает размер текста кнопки).
+SPECIALTY_PAGE_SIZE = 6
+
+
+def _shorten_button_text(text: str, max_len: int = 54) -> str:
+    """Укорачивает подпись на кнопке, чтобы не упираться в лимиты Telegram."""
+    cleaned = (text or "").strip()
+    if len(cleaned) <= max_len:
+        return cleaned
+    return cleaned[: max_len - 1] + "…"
+
+
+def specialty_pick_header(lang: str, track: str, department_title: str, page: int, total_pages: int) -> str:
+    """Заголовок экрана выбора специальности (с пагинацией)."""
+    safe_page = page + 1
+    if track == "college":
+        if lang == "ru":
+            head = f"Бірлестік / объединение:\n{department_title}\nСтраница {safe_page}/{total_pages}\n\nВыберите специальность:"
+        else:
+            head = f"Бірлестік:\n{department_title}\nБет {safe_page}/{total_pages}\n\nМамандықты таңдаңыз:"
+        return head
+    if lang == "ru":
+        return f"Кафедра:\n{department_title}\nСтраница {safe_page}/{total_pages}\n\nВыберите специальность:"
+    return f"Кафедра:\n{department_title}\nБет {safe_page}/{total_pages}\n\nМамандықты таңдаңыз:"
+
+
+def get_specialties_paged_kb(
+    lang: str,
+    faculty_idx: int,
+    track: str,
+    page: int,
+    *,
+    spec_prefix: str,
+    page_prefix: str,
+    back_callback: str,
+) -> InlineKeyboardMarkup:
+    """Специальности выбранного подразделения с постраничной навигацией."""
+    specialties_by_department = get_specialties_by_department(lang, track)
+    faculties = list(specialties_by_department.keys())
+    if faculty_idx < 0 or faculty_idx >= len(faculties):
+        builder = InlineKeyboardBuilder()
+        builder.row(get_back_button(back_callback, lang))
+        return builder.as_markup()
+    specs = specialties_by_department[faculties[faculty_idx]]
+    total = len(specs)
+    total_pages = max(1, ceil(total / SPECIALTY_PAGE_SIZE))
+    safe_page = max(0, min(page, total_pages - 1))
+    start = safe_page * SPECIALTY_PAGE_SIZE
+    chunk = specs[start : start + SPECIALTY_PAGE_SIZE]
+
+    builder = InlineKeyboardBuilder()
+    for offset, spec in enumerate(chunk):
+        abs_idx = start + offset
+        builder.row(
+            InlineKeyboardButton(
+                text=_shorten_button_text(spec),
+                callback_data=f"{spec_prefix}{faculty_idx}_{abs_idx}",
+            )
+        )
+    nav: list[InlineKeyboardButton] = []
+    if safe_page > 0:
+        nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"{page_prefix}{faculty_idx}_{safe_page - 1}"))
+    if safe_page < total_pages - 1:
+        nav.append(InlineKeyboardButton(text="➡️", callback_data=f"{page_prefix}{faculty_idx}_{safe_page + 1}"))
+    if nav:
+        builder.row(*nav)
+    builder.row(get_back_button(back_callback, lang))
+    return builder.as_markup()
 
 
 def _digits(value: object) -> str:
@@ -72,13 +144,72 @@ def get_college_menu(lang: str) -> InlineKeyboardMarkup:
     builder.row(get_back_button(f"{CallbackData.LANG_PREFIX}{lang}", lang))
     return builder.as_markup()
 
+
+def get_about_college_kb(lang: str, back_callback: str = CallbackData.LEVEL_COLL) -> InlineKeyboardMarkup:
+    """Экран «О колледже»: история и возврат в главное меню колледжа."""
+    btns = BUTTONS[lang]
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text=btns["college_history"], callback_data=f"{CallbackData.COLL_HIST_PREFIX}0"))
+    builder.row(get_back_button(back_callback, lang))
+    return builder.as_markup()
+
+
+def get_staff_cabinet_kb(
+    lang: str,
+    *,
+    show_review: bool,
+    show_staff_scope_tools: bool = False,
+    show_targeted_broadcast: bool = False,
+    back_callback: str,
+) -> InlineKeyboardMarkup:
+    """Инлайн-действия личного кабинета для зарегистрированных сотрудников (модерация, рассылки, дорожная карта)."""
+    builder = InlineKeyboardBuilder()
+    if show_review:
+        builder.row(
+            InlineKeyboardButton(
+                text=BUTTONS[lang]["review_regs"],
+                callback_data=CallbackData.REVIEW_REGISTRATIONS,
+            )
+        )
+    if show_targeted_broadcast:
+        builder.row(
+            InlineKeyboardButton(
+                text=tr(lang, "📣 Рассылка по базе (фильтры)", "📣 База бойынша хабарлама (сүзгілер)"),
+                callback_data=CallbackData.ADMIN_PANEL_BROADCAST,
+            )
+        )
+    if show_staff_scope_tools:
+        builder.row(
+            InlineKeyboardButton(
+                text=tr(lang, "✉️ Сообщение подопечным", "✉️ Тәлімгерлерге хабарлама"),
+                callback_data=CallbackData.STAFF_NOTIFY,
+            ),
+            InlineKeyboardButton(
+                text=tr(lang, "🔄 Сменить группу студенту", "🔄 Студенттің тобын өзгерту"),
+                callback_data=CallbackData.STAFF_REASSIGN_START,
+            ),
+        )
+    builder.row(
+        InlineKeyboardButton(
+            text=tr(
+                lang,
+                "Рабочее место: расписание и уведомления",
+                "Жұмыс орны: кесте және хабарламалар",
+            ),
+            callback_data=CallbackData.CABINET_WORKPLACE,
+        )
+    )
+    builder.row(get_back_button(back_callback, lang))
+    return builder.as_markup()
+
+
 def get_faculties_kb(
     lang: str,
     prefix: str = CallbackData.FAC_PREFIX,
     back_callback: str = CallbackData.LEVEL_UNI,
     track: str = "uni",
 ) -> InlineKeyboardMarkup:
-    """Клавиатура выбора кафедры."""
+    """Клавиатура выбора кафедры / бірлестік (для колледжа — объединения по направлениям)."""
     builder = InlineKeyboardBuilder()
     faculties = list(get_specialties_by_department(lang, track).keys())
     for idx, faculty in enumerate(faculties):
@@ -88,21 +219,16 @@ def get_faculties_kb(
 
 
 def get_specialties_kb(lang: str, faculty_idx: int, track: str = "uni") -> InlineKeyboardMarkup:
-    """Клавиатура выбора специальности выбранной кафедры."""
-    builder = InlineKeyboardBuilder()
-    specialties_by_department = get_specialties_by_department(lang, track)
-    faculties = list(specialties_by_department.keys())
-    selected_faculty = faculties[faculty_idx]
-    specialties = specialties_by_department[selected_faculty]
-    for idx, spec in enumerate(specialties):
-        builder.row(
-            InlineKeyboardButton(
-                text=spec,
-                callback_data=f"{CallbackData.SPEC_PREFIX}{faculty_idx}_{idx}",
-            )
-        )
-    builder.row(get_back_button(CallbackData.BACK_TO_FACULTY, lang))
-    return builder.as_markup()
+    """Клавиатура выбора специальности (первая страница; листание — через specpg_ / doc_spg_ / calc_spg_)."""
+    return get_specialties_paged_kb(
+        lang,
+        faculty_idx,
+        track,
+        0,
+        spec_prefix=CallbackData.SPEC_PREFIX,
+        page_prefix=CallbackData.SPEC_PAGE_PREFIX,
+        back_callback=CallbackData.BACK_TO_FACULTY,
+    )
 
 def get_course_kb(lang: str) -> InlineKeyboardMarkup:
     """Клавиатура выбора курса."""
@@ -143,7 +269,7 @@ def get_role_kb(lang: str) -> InlineKeyboardMarkup:
     )
     for label, code in roles:
         builder.row(InlineKeyboardButton(text=label, callback_data=code))
-    builder.row(get_back_button(CallbackData.FILL_FORM, lang))
+    builder.row(get_back_button(CallbackData.REG_BACK_PHONE, lang))
     return builder.as_markup()
 
 def get_socials_kb(lang: str, back_callback: str = CallbackData.LEVEL_UNI, track: str = "uni") -> InlineKeyboardMarkup:

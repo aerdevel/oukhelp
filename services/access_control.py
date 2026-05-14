@@ -17,6 +17,7 @@ def _default_payload() -> dict[str, Any]:
         str(int(settings.admin_id)): {
             "can_notify": True,
             "can_review": True,
+            "can_broadcast": True,
             "faculties": [ALL_GROUPS],
             "groups": [ALL_GROUPS],
             "specialties": [ALL_GROUPS],
@@ -25,6 +26,7 @@ def _default_payload() -> dict[str, Any]:
         str(int(settings.priemka_id)): {
             "can_notify": True,
             "can_review": True,
+            "can_broadcast": False,
             "faculties": [ALL_GROUPS],
             "groups": [ALL_GROUPS],
             "specialties": [ALL_GROUPS],
@@ -48,6 +50,7 @@ def _read_store() -> dict[str, Any]:
     for profile in data["users"].values():
         profile.setdefault("can_notify", False)
         profile.setdefault("can_review", False)
+        profile.setdefault("can_broadcast", False)
         profile.setdefault("faculties", [])
         profile.setdefault("groups", [])
         profile.setdefault("specialties", list(profile.get("groups", [])))
@@ -73,7 +76,7 @@ def ensure_user(user_id: int) -> dict[str, Any]:
     users = data["users"]
     profile = users.get(str(user_id))
     if profile is None:
-        profile = {"can_notify": False, "can_review": False, "faculties": [], "groups": [], "specialties": [], "is_admin": False}
+        profile = {"can_notify": False, "can_review": False, "can_broadcast": False, "faculties": [], "groups": [], "specialties": [], "is_admin": False}
         users[str(user_id)] = profile
         _write_store(data)
     return profile
@@ -85,6 +88,7 @@ def set_user_permissions(
     *,
     can_notify: bool | None = None,
     can_review: bool | None = None,
+    can_broadcast: bool | None = None,
     groups: list[str] | None = None,
     specialties: list[str] | None = None,
     faculties: list[str] | None = None,
@@ -95,12 +99,14 @@ def set_user_permissions(
     data = _read_store()
     profile = data["users"].get(
         str(target_user_id),
-        {"can_notify": False, "can_review": False, "faculties": [], "groups": [], "specialties": [], "is_admin": False},
+        {"can_notify": False, "can_review": False, "can_broadcast": False, "faculties": [], "groups": [], "specialties": [], "is_admin": False},
     )
     if can_notify is not None:
         profile["can_notify"] = bool(can_notify)
     if can_review is not None:
         profile["can_review"] = bool(can_review)
+    if can_broadcast is not None:
+        profile["can_broadcast"] = bool(can_broadcast)
     if groups is not None:
         normalized = [grp.strip() for grp in groups if grp.strip()]
         profile["groups"] = normalized
@@ -121,6 +127,7 @@ def get_user_permissions(user_id: int) -> dict[str, Any]:
     return {
         "can_notify": bool(profile.get("can_notify")),
         "can_review": bool(profile.get("can_review")),
+        "can_broadcast": bool(profile.get("can_broadcast")),
         "faculties": list(profile.get("faculties", [])),
         "groups": list(profile.get("groups", [])),
         "specialties": list(profile.get("specialties", profile.get("groups", []))),
@@ -131,6 +138,11 @@ def get_user_permissions(user_id: int) -> dict[str, Any]:
 def _has_access(profile: dict[str, Any], key: str, value: str) -> bool:
     values = set(profile.get(key, []))
     return ALL_GROUPS in values or value in values
+
+
+def can_use_targeted_broadcast(user_id: int) -> bool:
+    """Рассылка по фильтрам: админ или уполномоченный флагом can_broadcast."""
+    return bool(is_admin(user_id) or get_user_permissions(user_id).get("can_broadcast"))
 
 
 def can_notify(user_id: int, group: str, specialty: str | None = None) -> bool:

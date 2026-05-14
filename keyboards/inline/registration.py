@@ -14,8 +14,8 @@ def get_registration_confirm_kb(lang: str) -> InlineKeyboardMarkup:
                     callback_data=CallbackData.CONFIRM_FINAL,
                 ),
                 InlineKeyboardButton(
-                    text=tr(lang, "❌ Сбросить", "❌ Жою"),
-                    callback_data=CallbackData.FILL_FORM,
+                    text=tr(lang, "🔙 Назад", "🔙 Артқа"),
+                    callback_data=CallbackData.REG_BACK_PREVIEW,
                 ),
             ]
         ]

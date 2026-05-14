@@ -1,3 +1,5 @@
+from math import ceil
+
 from aiogram import F, Router, types
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -7,7 +9,9 @@ from core.resources.text_file.catalog import get_specialties_by_department
 from core.resources.text_file.pricing import BASE_TUITION_YEAR, get_discounts
 from keyboards import inline as ikb
 from services.calculator import calculate_tuition
+from utils.i18n import tr
 from utils.number_format import format_int
+from utils.safe_telegram import safe_edit_message_text
 
 router = Router()
 
@@ -80,14 +84,20 @@ async def select_specialty_for_calc(callback: types.CallbackQuery, state: FSMCon
     # Если расчет открыт из сценария перечня, не заставляем пользователя
     # повторно выбирать кафедру/специальность.
     if preset_specialty and back_callback == CallbackData.DOCS:
-        await callback.message.edit_text(
+        await safe_edit_message_text(
+            callback.message,
             _category_prompt(lang),
             reply_markup=_build_categories_kb(lang, list(preset_categories), track),
         )
         return
 
-    text = "Выберите кафедру для расчета:" if lang == "ru" else "Есептеу үшін кафедраны таңдаңыз:"
-    await callback.message.edit_text(
+    text = (
+        tr(lang, "Выберите бірлестік для расчёта:", "Есептеу үшін бірлестікті таңдаңыз:")
+        if track == "college"
+        else tr(lang, "Выберите кафедру для расчета:", "Есептеу үшін кафедраны таңдаңыз:")
+    )
+    await safe_edit_message_text(
+        callback.message,
         text,
         reply_markup=ikb.get_faculties_kb(
             lang,
@@ -114,28 +124,61 @@ async def select_calc_specialty(callback: types.CallbackQuery, state: FSMContext
 
     selected_idx = int(faculty_idx)
     selected_faculty = faculties[selected_idx]
-    text = (
-        f"Кафедра: {selected_faculty}\n\nВыберите специальность для расчета:"
-        if lang == "ru"
-        else f"Кафедра: {selected_faculty}\n\nЕсептеу үшін мамандықты таңдаңыз:"
+    specs = specialties_by_department[selected_faculty]
+    total_pages = max(1, ceil(len(specs) / ikb.SPECIALTY_PAGE_SIZE))
+    header = ikb.specialty_pick_header(lang, track, selected_faculty, 0, total_pages)
+    await safe_edit_message_text(
+        callback.message,
+        header,
+        reply_markup=ikb.get_specialties_paged_kb(
+            lang,
+            selected_idx,
+            track,
+            0,
+            spec_prefix=CallbackData.CALC_SPEC_PREFIX,
+            page_prefix=CallbackData.CALC_SPEC_PAGE_PREFIX,
+            back_callback=CallbackData.CALC_START,
+        ),
     )
-    builder = InlineKeyboardBuilder()
-    specialties = specialties_by_department[selected_faculty]
-    for spec_idx, spec in enumerate(specialties):
-        builder.row(
-            types.InlineKeyboardButton(
-                text=spec,
-                callback_data=f"{CallbackData.CALC_SPEC_PREFIX}{selected_idx}_{spec_idx}",
-            )
-        )
-    back_text = "🔙 Назад" if lang == "ru" else "🔙 Артқа"
-    builder.row(
-        types.InlineKeyboardButton(
-            text=back_text,
-            callback_data=CallbackData.CALC_START,
-        )
+
+
+@router.callback_query(F.data.startswith(CallbackData.CALC_SPEC_PAGE_PREFIX))
+async def calc_specialty_page(callback: types.CallbackQuery, state: FSMContext):
+    """Перелистывание списка специальностей в калькуляторе."""
+    await callback.answer()
+    data = await state.get_data()
+    lang = data.get("locale", "ru")
+    track = _track_from_state(data)
+    payload = callback.data.replace(CallbackData.CALC_SPEC_PAGE_PREFIX, "")
+    fac_raw, _, page_raw = payload.partition("_")
+    if not fac_raw.isdigit() or not page_raw.isdigit():
+        await callback.message.answer("Ошибка: страница не найдена." if lang == "ru" else "Қате: бет табылмады.")
+        return
+    fac_idx = int(fac_raw)
+    page = int(page_raw)
+    specialties_by_department = get_specialties_by_department(lang, track)
+    faculties = list(specialties_by_department.keys())
+    if fac_idx >= len(faculties):
+        await callback.message.answer("Ошибка: кафедра не найдена." if lang == "ru" else "Қате: кафедра табылмады.")
+        return
+    selected_faculty = faculties[fac_idx]
+    specs = specialties_by_department[selected_faculty]
+    total_pages = max(1, ceil(len(specs) / ikb.SPECIALTY_PAGE_SIZE))
+    safe_page = max(0, min(page, total_pages - 1))
+    header = ikb.specialty_pick_header(lang, track, selected_faculty, safe_page, total_pages)
+    await safe_edit_message_text(
+        callback.message,
+        header,
+        reply_markup=ikb.get_specialties_paged_kb(
+            lang,
+            fac_idx,
+            track,
+            safe_page,
+            spec_prefix=CallbackData.CALC_SPEC_PREFIX,
+            page_prefix=CallbackData.CALC_SPEC_PAGE_PREFIX,
+            back_callback=CallbackData.CALC_START,
+        ),
     )
-    await callback.message.edit_text(text, reply_markup=builder.as_markup())
 
 @router.callback_query(F.data.startswith(CallbackData.CALC_SPEC_PREFIX))
 async def choose_category(callback: types.CallbackQuery, state: FSMContext):
@@ -171,7 +214,11 @@ async def choose_category(callback: types.CallbackQuery, state: FSMContext):
         calc_specialty=specialties[spec_idx],
         calc_categories=[],
     )
-    await callback.message.edit_text(_category_prompt(lang), reply_markup=_build_categories_kb(lang, [], track))
+    await safe_edit_message_text(
+        callback.message,
+        _category_prompt(lang),
+        reply_markup=_build_categories_kb(lang, [], track),
+    )
 
 @router.callback_query(F.data.startswith(CallbackData.CALC_PREFIX))
 async def toggle_category(callback: types.CallbackQuery, state: FSMContext):
@@ -196,7 +243,11 @@ async def toggle_category(callback: types.CallbackQuery, state: FSMContext):
             selected = [key for key in selected if key != "none"]
             selected.append(category_key)
     await state.update_data(calc_categories=selected)
-    await callback.message.edit_text(_category_prompt(lang), reply_markup=_build_categories_kb(lang, selected, track))
+    await safe_edit_message_text(
+        callback.message,
+        _category_prompt(lang),
+        reply_markup=_build_categories_kb(lang, selected, track),
+    )
 
 
 @router.callback_query(F.data == CallbackData.CALC_RESET)
@@ -206,12 +257,15 @@ async def reset_categories(callback: types.CallbackQuery, state: FSMContext):
     lang = data.get("locale", "ru")
     track = _track_from_state(data)
     await state.update_data(calc_categories=[])
-    await callback.message.edit_text(_category_prompt(lang), reply_markup=_build_categories_kb(lang, [], track))
+    await safe_edit_message_text(
+        callback.message,
+        _category_prompt(lang),
+        reply_markup=_build_categories_kb(lang, [], track),
+    )
 
 
 @router.callback_query(F.data == CallbackData.CALC_DONE)
 async def show_calculation(callback: types.CallbackQuery, state: FSMContext):
-    await callback.answer()
     data = await state.get_data()
     lang = data.get("locale", "ru")
     track = _track_from_state(data)
@@ -272,4 +326,5 @@ async def show_calculation(callback: types.CallbackQuery, state: FSMContext):
             callback_data=CallbackData.CALC_START,
         )
     )
-    await callback.message.edit_text(result, reply_markup=builder.as_markup())
+    await safe_edit_message_text(callback.message, result, reply_markup=builder.as_markup())
+    await callback.answer()

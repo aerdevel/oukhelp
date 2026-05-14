@@ -217,13 +217,27 @@ def close_ticket(ticket_id: str, closed_by_user: bool = True) -> dict[str, Any] 
     return ticket
 
 
+def psychologist_reply_counts_from_messages(ticket: dict[str, Any]) -> dict[str, int]:
+    """Считает только реальные ответы сотрудника в тикете (записи в messages), без «присутствия» в чате."""
+    counts: dict[str, int] = {}
+    for row in ticket.get("messages", []):
+        if row.get("from") != "psychologist":
+            continue
+        sid = row.get("psychologist_id")
+        if sid is None:
+            continue
+        key = str(int(sid))
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
 def format_staff_stats(ticket: dict[str, Any]) -> str:
-    stats = ticket.get("psychologist_stats", {})
-    if not stats:
-        return "нет ответов"
+    counts = psychologist_reply_counts_from_messages(ticket)
+    if not counts:
+        return "нет ответов в переписке тикета"
     profiles = ticket.get("staff_profiles", {})
     rows: list[str] = []
-    for staff_id, count in stats.items():
+    for staff_id, cnt in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
         profile = profiles.get(str(staff_id), {})
         username = str(profile.get("username", "")).strip()
         full_name = str(profile.get("full_name", "")).strip()
@@ -233,7 +247,7 @@ def format_staff_stats(ticket: dict[str, Any]) -> str:
             label = full_name
         else:
             label = f"ID {staff_id}"
-        rows.append(f"{label}: {count}")
+        rows.append(f"{label}: {cnt}")
     return ", ".join(rows)
 
 
@@ -453,8 +467,11 @@ def build_staff_performance(period: str = "all") -> list[dict[str, Any]]:
             continue
         ticket_score = calculate_ticket_quality_score(ticket)
         rating = int(ticket.get("rating") or 0)
-        stats = ticket.get("psychologist_stats", {})
+        stats = psychologist_reply_counts_from_messages(ticket)
+        if not stats:
+            continue
         profiles = ticket.get("staff_profiles", {})
+        registry = data.get("staff_registry", {})
         for staff_id, replies in stats.items():
             bucket = aggregate.setdefault(
                 str(staff_id),
@@ -466,7 +483,9 @@ def build_staff_performance(period: str = "all") -> list[dict[str, Any]]:
                 bucket["rating_sum"] += rating
                 bucket["rating_count"] += 1
             bucket["quality_points"] += ticket_score
-            bucket["profile"] = profiles.get(str(staff_id), bucket["profile"])
+            prof = profiles.get(str(staff_id), {}) or registry.get(str(staff_id), {})
+            if prof:
+                bucket["profile"] = prof
     rows = []
     for item in aggregate.values():
         avg_rating = round(item["rating_sum"] / item["rating_count"], 2) if item["rating_count"] else 0.0

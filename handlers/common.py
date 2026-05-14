@@ -14,6 +14,7 @@ from keyboards import inline as ikb
 from keyboards import reply as rkb
 from services.access_control import is_admin
 from services.registration_store import get_approved_user
+from services.fsm_scope import reset_user_wizard_for_main_menu
 from services.status import build_applicant_status_text, build_moderation_queue_text
 from services.support_tickets import (
     assign_ticket,
@@ -43,6 +44,8 @@ from services.support_transport import build_message_payload, copy_with_reply, i
 from services.user_data import build_user_data_export, delete_user_data
 from states.states import HelpRequest
 from utils.i18n import tr
+from utils.main_menu_reply import sync_main_menu_reply_keyboard
+from utils.validators import MIN_HELP_TEXT_LEN, MIN_RATING_COMMENT_LEN, validate_min_plaintext
 
 router = Router()
 def _can_manage_support(from_user_id: int) -> bool:
@@ -132,15 +135,6 @@ def _configured_support_chat_ids() -> set[int]:
         chat_ids.add(int(settings.psycholog_chat_id))
     return chat_ids
 
-
-
-def _keyboard_anchor_text(lang: str) -> str:
-    """Техническое сообщение для гарантированного показа reply-клавиатуры.
-
-    Telegram не отправляет сообщение с пустым текстом, поэтому
-    используем короткий нейтральный якорь.
-    """
-    return tr(lang, "⬇️ Меню", "⬇️ Мәзір")
 
 
 def _support_target_chat(topic_code: str) -> int | None:
@@ -272,12 +266,12 @@ async def uni_menu(callback: types.CallbackQuery, state: FSMContext):
     """Главное меню Университета."""
     data = await state.get_data()
     lang = data.get("locale", "ru")
-    if data.get("psy_ticket_id"):
-        # Выход из режима ввода сообщений психологу без закрытия тикета.
-        await state.set_state(None)
-    
+    await reset_user_wizard_for_main_menu(state)
+    data = await state.get_data()
+    lang = data.get("locale", "ru")
+
     await state.update_data(current_choice="Университет", admission_track="uni")
-    
+
     text = MESSAGES[lang]["main_menu"]
     approved_profile = get_approved_user(callback.from_user.id)
     reviewer = is_responsible_user(callback.from_user.id)
@@ -290,8 +284,10 @@ async def uni_menu(callback: types.CallbackQuery, state: FSMContext):
             is_responsible=reviewer,
         ),
     )
-    await callback.message.answer(
-        _keyboard_anchor_text(lang),
+    await sync_main_menu_reply_keyboard(
+        callback.bot,
+        chat_id=callback.message.chat.id,
+        lang=lang,
         reply_markup=rkb.get_main_action_kb(
             lang,
             is_registered=approved_profile is not None,
@@ -299,8 +295,8 @@ async def uni_menu(callback: types.CallbackQuery, state: FSMContext):
             is_admin=admin,
             is_psy_admin=_is_psy_admin(callback.from_user.id),
         ),
+        state=state,
     )
-    await state.update_data(action_kb_initialized=True)
     await callback.answer()
 
 
@@ -308,18 +304,21 @@ async def uni_menu(callback: types.CallbackQuery, state: FSMContext):
 async def main_menu_text(message: types.Message, state: FSMContext):
     data = await state.get_data()
     lang = data.get("locale", "ru")
-    if data.get("psy_ticket_id"):
-        await state.set_state(None)
+    is_college = data.get("admission_track") == "college" or data.get("current_choice") == "Колледж"
+    await reset_user_wizard_for_main_menu(state)
+    data = await state.get_data()
+    lang = data.get("locale", "ru")
     approved_profile = get_approved_user(message.from_user.id)
     reviewer = is_responsible_user(message.from_user.id)
     admin = is_admin(message.from_user.id)
-    is_college = data.get("admission_track") == "college" or data.get("current_choice") == "Колледж"
     await message.answer(
         MESSAGES[lang]["college_menu"] if is_college else MESSAGES[lang]["main_menu"],
         reply_markup=ikb.get_college_menu(lang) if is_college else ikb.get_uni_menu(lang),
     )
-    await message.answer(
-        _keyboard_anchor_text(lang),
+    await sync_main_menu_reply_keyboard(
+        message.bot,
+        chat_id=message.chat.id,
+        lang=lang,
         reply_markup=rkb.get_main_action_kb(
             lang,
             is_registered=approved_profile is not None,
@@ -327,8 +326,8 @@ async def main_menu_text(message: types.Message, state: FSMContext):
             is_admin=admin,
             is_psy_admin=_is_psy_admin(message.from_user.id),
         ),
+        state=state,
     )
-    await state.update_data(action_kb_initialized=True)
 
 
 @router.message(F.text.in_(["🎓 Выбор уровня", "🎓 Деңгей таңдау"]))
@@ -528,7 +527,7 @@ async def help_collect_text(message: types.Message, state: FSMContext):
         )
         return
 
-    if len(text) < 5:
+    if not validate_min_plaintext(text, min_len=MIN_HELP_TEXT_LEN):
         await message.answer(
             tr(
                 lang,
@@ -655,7 +654,7 @@ async def psy_rating_comment(message: types.Message, state: FSMContext):
         await state.clear()
         return
     comment = (message.text or "").strip()
-    if len(comment) < 3:
+    if not validate_min_plaintext(comment, min_len=MIN_RATING_COMMENT_LEN):
         await message.answer("Напишите комментарий чуть подробнее (минимум 3 символа).")
         return
     set_ticket_rating_comment(ticket_id, comment)
@@ -1236,20 +1235,24 @@ async def coll_menu(callback: types.CallbackQuery, state: FSMContext):
     """Главное меню колледжа."""
     data = await state.get_data()
     lang = data.get("locale", "ru")
-    if data.get("psy_ticket_id"):
-        await state.set_state(None)
+    await reset_user_wizard_for_main_menu(state)
+    data = await state.get_data()
+    lang = data.get("locale", "ru")
+
     await state.update_data(current_choice="Колледж", admission_track="college")
 
     text = MESSAGES[lang]["college_menu"]
     await callback.message.edit_text(
         text,
-        reply_markup=ikb.get_college_menu(lang)
+        reply_markup=ikb.get_college_menu(lang),
     )
     approved_profile = get_approved_user(callback.from_user.id)
     reviewer = is_responsible_user(callback.from_user.id)
     admin = is_admin(callback.from_user.id)
-    await callback.message.answer(
-        _keyboard_anchor_text(lang),
+    await sync_main_menu_reply_keyboard(
+        callback.bot,
+        chat_id=callback.message.chat.id,
+        lang=lang,
         reply_markup=rkb.get_main_action_kb(
             lang,
             is_registered=approved_profile is not None,
@@ -1257,8 +1260,8 @@ async def coll_menu(callback: types.CallbackQuery, state: FSMContext):
             is_admin=admin,
             is_psy_admin=_is_psy_admin(callback.from_user.id),
         ),
+        state=state,
     )
-    await state.update_data(action_kb_initialized=True)
     await callback.answer()
 
 

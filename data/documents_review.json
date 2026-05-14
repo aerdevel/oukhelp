@@ -5,16 +5,16 @@
       "tg_user_id": 5394280567,
       "tg_username": "spisoq",
       "tg_full_name": "Pawa Dura",
-      "fio": "rjrrk ej'",
-      "role": "Работник",
-      "group": "-",
-      "faculty": "-",
-      "specialty": "-",
-      "course": "-",
-      "phone": "+77700042874",
-      "source": "smi",
-      "admission_faculty": "Технические и ИТ-направления",
-      "admission_specialty": "07151000 - Эксплуатация и ремонт полиграфического оборудования",
+      "fio": "grgrgrg",
+      "role": "Студент",
+      "group": "ВТПО 23-1",
+      "faculty": "Инженерные технологии",
+      "specialty": "6B11380 - Вычислительная техника и программное обеспечение",
+      "course": "3",
+      "phone": "+77004287470",
+      "source": "аллала",
+      "admission_faculty": "Бірлестік «Кәсіби-техникалық мамандықтар»",
+      "admission_specialty": "02110500 — Технология полиграфического и упаковочного производства",
       "calc_discount_rate": 0.0,
       "calc_year_price": 450000,
       "calc_total_price": 1800000,
@@ -23,35 +23,36 @@
       ],
       "is_grant": false,
       "admission_track": "college",
+      "locale": "ru",
       "documents": {
         "diploma": {
           "kind": "photo",
-          "file_id": "AgACAgIAAxkBAAIGvGn7UUKA5gNGUQydxGm3L9k9RY5AAAJnFGsbeLLYSyTzWVtJToM0AQADAgADeQADOwQ",
+          "file_id": "AgACAgIAAxkBAAIIxGoFjCjRzZHt7SFfs6nv_MzC40PdAAKzGGsbgoIxSAPfTcG6SA8-AQADAgADdwADOwQ",
           "local_path": "data/files/5394280567/attestat_diplom.jpg"
         },
         "id_card": {
           "kind": "photo",
-          "file_id": "AgACAgIAAxkBAAIGvGn7UUKA5gNGUQydxGm3L9k9RY5AAAJnFGsbeLLYSyTzWVtJToM0AQADAgADeQADOwQ",
+          "file_id": "AgACAgIAAxkBAAIIxGoFjCjRzZHt7SFfs6nv_MzC40PdAAKzGGsbgoIxSAPfTcG6SA8-AQADAgADdwADOwQ",
           "local_path": "data/files/5394280567/udostoverenie.jpg"
         },
         "photo_3x4": {
           "kind": "photo",
-          "file_id": "AgACAgIAAxkBAAIGvGn7UUKA5gNGUQydxGm3L9k9RY5AAAJnFGsbeLLYSyTzWVtJToM0AQADAgADeQADOwQ",
+          "file_id": "AgACAgIAAxkBAAIIxGoFjCjRzZHt7SFfs6nv_MzC40PdAAKzGGsbgoIxSAPfTcG6SA8-AQADAgADdwADOwQ",
           "local_path": "data/files/5394280567/photo_3x4.jpg"
         },
         "medical_075": {
           "kind": "photo",
-          "file_id": "AgACAgIAAxkBAAIGvGn7UUKA5gNGUQydxGm3L9k9RY5AAAJnFGsbeLLYSyTzWVtJToM0AQADAgADeQADOwQ",
+          "file_id": "AgACAgIAAxkBAAIIxGoFjCjRzZHt7SFfs6nv_MzC40PdAAKzGGsbgoIxSAPfTcG6SA8-AQADAgADdwADOwQ",
           "local_path": "data/files/5394280567/med_075u.jpg"
         },
         "ent_certificate": null
       },
       "consent_personal_data": true,
-      "created_at": "2026-05-06T15:14:25.459690+00:00",
-      "submit_attempt": 3,
+      "created_at": "2026-05-14T08:48:07.643612+00:00",
+      "submit_attempt": 4,
       "review_status": "approved",
-      "reviewer_id": 1216962667,
-      "reviewer_username": "ilikebooobs"
+      "reviewer_id": 5394280567,
+      "reviewer_username": "spisoq"
     },
     "7939104831": {
       "tg_user_id": 7939104831,

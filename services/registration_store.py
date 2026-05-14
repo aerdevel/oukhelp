@@ -209,6 +209,23 @@ def delete_user_registration_data(tg_user_id: int) -> bool:
     return changed
 
 
+def update_approved_profile(tg_user_id: int, **fields: Any) -> dict[str, Any] | None:
+    """Точечное обновление карточки одобренного пользователя (например, смена группы)."""
+    data = _read_store()
+    target_id = _safe_int(tg_user_id, 0)
+    for item in data.get("approved", []):
+        if _safe_int(item.get("tg_user_id"), 0) != target_id:
+            continue
+        for key, value in fields.items():
+            if value is None:
+                continue
+            item[str(key)] = value
+        item["profile_updated_at"] = datetime.now(timezone.utc).isoformat()
+        _write_store(data)
+        return item
+    return None
+
+
 def set_user_grant_flag(tg_user_id: int, is_grant: bool) -> dict[str, Any] | None:
     data = _read_store()
     target_id = _safe_int(tg_user_id, 0)

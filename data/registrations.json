@@ -34,10 +34,49 @@
       "locale": "ru",
       "current_choice": "Университет",
       "admission_track": "uni",
+      "tg_user_id": 7939104831,
+      "tg_full_name": "Отец Демидов'мур",
+      "tg_username": "kotakbaser",
+      "fio": "hdhdhdd",
+      "phone": "+77003272517",
+      "role": "Студент",
+      "faculty": "Инженерные технологии",
+      "specialty": "6B11380 - Вычислительная техника и программное обеспечение",
+      "course": "3",
+      "group": "ВТПО 23-1",
+      "is_grant": false,
+      "created_at": "2026-05-14T08:11:27.881286+00:00",
+      "status": "approved",
+      "submit_attempt": 1,
+      "reviewed_by": 5394280567,
+      "reviewed_by_username": "spisoq",
+      "reviewed_at": "2026-05-14T08:11:31.307277+00:00"
+    },
+    {
+      "action_kb_initialized": true,
+      "locale": "ru",
+      "current_choice": "Университет",
+      "admission_track": "uni",
+      "admin_specs_selected": {
+        "7939104831": [
+          4
+        ]
+      },
+      "admin_specs_track": {
+        "7939104831": "uni"
+      },
+      "admin_groups_selected": {
+        "7939104831": [
+          0
+        ]
+      },
+      "admin_groups_track": {
+        "7939104831": "uni"
+      },
       "tg_user_id": 5394280567,
       "tg_full_name": "Pawa Dura",
       "tg_username": "spisoq",
-      "fio": "etetetet",
+      "fio": "grgrgrg",
       "phone": "+77004287470",
       "role": "Студент",
       "faculty": "Инженерные технологии",
@@ -45,12 +84,12 @@
       "course": "3",
       "group": "ВТПО 23-1",
       "is_grant": false,
-      "created_at": "2026-05-06T17:09:03.476575+00:00",
+      "created_at": "2026-05-14T08:12:54.712788+00:00",
       "status": "approved",
-      "submit_attempt": 4,
-      "reviewed_by": 5394280567,
-      "reviewed_by_username": "spisoq",
-      "reviewed_at": "2026-05-06T17:09:05.527827+00:00"
+      "submit_attempt": 5,
+      "reviewed_by": 7939104831,
+      "reviewed_by_username": "kotakbaser",
+      "reviewed_at": "2026-05-14T08:12:59.225156+00:00"
     }
   ],
   "denied": []

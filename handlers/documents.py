@@ -1,4 +1,5 @@
 import logging
+from math import ceil
 
 from aiogram import F, Router, types
 from aiogram.fsm.context import FSMContext
@@ -28,7 +29,7 @@ from services.registration_store import find_phone_owner, get_approved_user
 from services.calculator import calculate_tuition
 from utils.i18n import tr
 from utils.number_format import format_int
-from utils.validators import normalize_phone, sanitize_text, validate_phone
+from utils.validators import MIN_FIO_LEN, MIN_SOURCE_LEN, normalize_phone, sanitize_text, validate_min_plaintext, validate_phone
 
 router = Router()
 REVIEW_CHAT_ID = settings.moderation_chat_id
@@ -83,6 +84,7 @@ async def _build_docs_package(state: FSMContext, sender: types.User) -> dict:
         "calc_applied_discounts": data.get("calc_applied_discounts") or [],
         "is_grant": float(data.get("calc_discount_rate") or 0.0) >= 0.999,
         "admission_track": _track_from_state(data),
+        "locale": data.get("locale", "ru"),
         "documents": {
             "diploma": data.get("doc_diploma"),
             "id_card": data.get("doc_id_card"),
@@ -107,7 +109,14 @@ async def _ask_diploma_step(target: types.Message | types.CallbackQuery, lang: s
 
 
 async def _ask_faculty_step(target: types.Message | types.CallbackQuery, lang: str, track: str) -> None:
-    text = tr(lang, "Выберите кафедру поступления:", "Түсетін кафедраны таңдаңыз:")
+    if track == "college":
+        text = tr(
+            lang,
+            "Выберите бірлестік (структурное объединение) поступления:",
+            "Түсетін бірлестікті таңдаңыз:",
+        )
+    else:
+        text = tr(lang, "Выберите кафедру поступления:", "Түсетін кафедраны таңдаңыз:")
     kb = ikb.get_faculties_kb(lang, prefix=CallbackData.DOC_FAC_PREFIX, back_callback=CallbackData.DOCS, track=track)
     if isinstance(target, types.CallbackQuery):
         await target.message.edit_text(text, reply_markup=kb)
@@ -122,6 +131,7 @@ async def show_docs_list(callback: types.CallbackQuery, state: FSMContext):
     lang = data.get("locale", "ru")
     track = _track_from_state(data)
     await state.update_data(admission_track=track)
+    await state.set_state(None)
     text = MESSAGES[lang]["docs_list_college"] if track == "college" else MESSAGES[lang]["docs_list"]
     back_callback = CallbackData.LEVEL_COLL if track == "college" else CallbackData.LEVEL_UNI
     
@@ -214,7 +224,7 @@ async def docs_collect_fio(message: types.Message, state: FSMContext):
     data = await state.get_data()
     lang = data.get("locale", "ru")
     fio = sanitize_text(message.text or "")
-    if len(fio) < 5:
+    if not validate_min_plaintext(fio, min_len=MIN_FIO_LEN):
         await message.answer(
             tr(
                 lang,
@@ -306,7 +316,7 @@ async def docs_collect_source(message: types.Message, state: FSMContext):
     data = await state.get_data()
     lang = data.get("locale", "ru")
     source = sanitize_text(message.text or "")
-    if len(source) < 3:
+    if not validate_min_plaintext(source, min_len=MIN_SOURCE_LEN):
         await message.answer(tr(lang, "Уточните источник (минимум 3 символа).", "Дереккөзді нақтылаңыз (кемінде 3 таңба)."))
         return
     await state.update_data(source=source)
@@ -334,25 +344,66 @@ async def docs_select_faculty(callback: types.CallbackQuery, state: FSMContext):
     specialties_by_department = get_specialties_by_department(lang, track)
     faculties = list(specialties_by_department.keys())
     if not raw_idx.isdigit() or int(raw_idx) >= len(faculties):
-        await callback.answer("Некорректный выбор кафедры.", show_alert=True)
+        await callback.answer(
+            tr(lang, "Некорректный выбор объединения (бірлестік).", "Бірлестік таңдау дұрыс емес.")
+            if track == "college"
+            else tr(lang, "Некорректный выбор кафедры.", "Кафедра таңдау дұрыс емес."),
+            show_alert=True,
+        )
         return
     idx = int(raw_idx)
     selected_faculty = faculties[idx]
     await state.update_data(admission_faculty=selected_faculty)
-    builder = InlineKeyboardBuilder()
-    for spec_idx, specialty in enumerate(specialties_by_department[selected_faculty]):
-        builder.row(
-            types.InlineKeyboardButton(
-                text=specialty,
-                callback_data=f"{CallbackData.DOC_SPEC_PREFIX}{idx}_{spec_idx}",
-            )
-        )
-    builder.row(types.InlineKeyboardButton(text="🔙 Назад" if lang == "ru" else "🔙 Артқа", callback_data=CallbackData.DOCS))
-    await state.set_state(DocumentUpload.waiting_for_specialty)
-    await callback.message.edit_text(
-        tr(lang, "Выберите специальность поступления:", "Түсетін мамандықты таңдаңыз:"),
-        reply_markup=builder.as_markup(),
+    specs = specialties_by_department[selected_faculty]
+    total_pages = max(1, ceil(len(specs) / ikb.SPECIALTY_PAGE_SIZE))
+    header = ikb.specialty_pick_header(lang, track, selected_faculty, 0, total_pages)
+    markup = ikb.get_specialties_paged_kb(
+        lang,
+        idx,
+        track,
+        0,
+        spec_prefix=CallbackData.DOC_SPEC_PREFIX,
+        page_prefix=CallbackData.DOC_SPEC_PAGE_PREFIX,
+        back_callback=CallbackData.DOCS,
     )
+    await state.set_state(DocumentUpload.waiting_for_specialty)
+    await callback.message.edit_text(header, reply_markup=markup)
+    await callback.answer()
+
+
+@router.callback_query(DocumentUpload.waiting_for_specialty, F.data.startswith(CallbackData.DOC_SPEC_PAGE_PREFIX))
+async def docs_specialty_page(callback: types.CallbackQuery, state: FSMContext):
+    """Листание списка специальностей при подаче перечня (колледж/универ)."""
+    data = await state.get_data()
+    lang = data.get("locale", "ru")
+    track = _track_from_state(data)
+    payload = callback.data.replace(CallbackData.DOC_SPEC_PAGE_PREFIX, "")
+    fac_raw, _, page_raw = payload.partition("_")
+    if not fac_raw.isdigit() or not page_raw.isdigit():
+        await callback.answer(tr(lang, "Некорректная страница.", "Бет дұрыс емес."), show_alert=True)
+        return
+    fac_idx = int(fac_raw)
+    page = int(page_raw)
+    specialties_by_department = get_specialties_by_department(lang, track)
+    faculties = list(specialties_by_department.keys())
+    if fac_idx >= len(faculties):
+        await callback.answer(tr(lang, "Некорректная страница.", "Бет дұрыс емес."), show_alert=True)
+        return
+    selected_faculty = faculties[fac_idx]
+    specs = specialties_by_department[selected_faculty]
+    total_pages = max(1, ceil(len(specs) / ikb.SPECIALTY_PAGE_SIZE))
+    safe_page = max(0, min(page, total_pages - 1))
+    header = ikb.specialty_pick_header(lang, track, selected_faculty, safe_page, total_pages)
+    markup = ikb.get_specialties_paged_kb(
+        lang,
+        fac_idx,
+        track,
+        safe_page,
+        spec_prefix=CallbackData.DOC_SPEC_PREFIX,
+        page_prefix=CallbackData.DOC_SPEC_PAGE_PREFIX,
+        back_callback=CallbackData.DOCS,
+    )
+    await callback.message.edit_text(header, reply_markup=markup)
     await callback.answer()
 
 
@@ -522,6 +573,36 @@ async def policy_not_configured(callback: types.CallbackQuery, state: FSMContext
     await callback.answer()
 
 
+@router.callback_query(F.data == CallbackData.DOC_BACK_FROM_CONFIRM)
+async def doc_back_from_confirm(callback: types.CallbackQuery, state: FSMContext):
+    """Возврат с финального подтверждения к шагу источника без сброса загруженных файлов."""
+    data = await state.get_data()
+    lang = data.get("locale", "ru")
+    track = _track_from_state(data)
+    await state.update_data(
+        source="",
+        documents_consent=False,
+        awaiting_source_before_confirm=False,
+        awaiting_source_before_finalize=False,
+    )
+    await state.set_state(DocumentUpload.waiting_for_source)
+    prompt = (
+        tr(
+            lang,
+            "Укажите, пожалуйста, откуда вы узнали о нас (университет/колледж):",
+            "Біз туралы қайдан білгеніңізді жазыңыз (университет/колледж):",
+        )
+        if track == "college"
+        else tr(
+            lang,
+            "Укажите, пожалуйста, откуда вы узнали об университете:",
+            "Университет туралы қайдан білгеніңізді жазыңыз:",
+        )
+    )
+    await callback.message.edit_text(prompt, reply_markup=ikb.get_back_kb(lang, CallbackData.DOCS))
+    await callback.answer()
+
+
 @router.callback_query(F.data == CallbackData.CONFIRM_DOCS)
 async def finalize_documents(callback: types.CallbackQuery, state: FSMContext):
     """Фиксирует пакет в очереди и отправляет его на модерацию."""
@@ -614,10 +695,29 @@ async def review_documents_package(callback: types.CallbackQuery):
         upsert_applicant_record(package)
         await callback.message.answer(f"✅ Пакет пользователя {tg_user_id} принят и сохранен в реестр.")
         try:
-            await callback.bot.send_message(
-                tg_user_id,
-                "✅ Ваш пакет документов принят приемной комиссией.",
+            lang = str(package.get("locale") or "ru")
+            if lang not in ("ru", "kz"):
+                lang = "ru"
+            track = str(package.get("admission_track", "uni"))
+            orig_note = tr(
+                lang,
+                (
+                    "Оригиналы документов необходимо принести в колледж (приёмная комиссия)."
+                    if track == "college"
+                    else "Оригиналы документов необходимо принести в университет (приёмная комиссия)."
+                ),
+                (
+                    "Түпнұсқа құжаттарды колледжге (қабылдау комиссиясына) әкелуіңіз керек."
+                    if track == "college"
+                    else "Түпнұсқа құжаттарды университетке (қабылдау комиссиясына) әкелуіңіз керек."
+                ),
             )
+            approved_text = (
+                tr(lang, "✅ Ваш пакет документов принят приемной комиссией.", "✅ Құжаттар пакетіңіз қабылдау комиссиясына қабылданды.")
+                + "\n\n"
+                + orig_note
+            )
+            await callback.bot.send_message(tg_user_id, approved_text)
         except Exception as err:
             logging.warning("Не удалось уведомить пользователя %s об одобрении пакета: %s", tg_user_id, err)
         append_audit_event(

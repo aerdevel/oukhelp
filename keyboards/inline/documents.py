@@ -49,8 +49,8 @@ def get_docs_confirm_kb(lang: str, *, consent_given: bool = False) -> InlineKeyb
                     callback_data=CallbackData.CONFIRM_DOCS,
                 ),
                 InlineKeyboardButton(
-                    text=tr(lang, "❌ Сбросить", "❌ Қайта бастау"),
-                    callback_data=CallbackData.START_UPLOAD,
+                    text=tr(lang, "🔙 Назад", "🔙 Артқа"),
+                    callback_data=CallbackData.DOC_BACK_FROM_CONFIRM,
                 ),
             ]
         ]

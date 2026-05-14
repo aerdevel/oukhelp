@@ -24,6 +24,18 @@
       ],
       "is_admin": false,
       "faculties": []
+    },
+    "7939104831": {
+      "can_notify": true,
+      "can_review": true,
+      "faculties": [],
+      "groups": [
+        "ВТПО 23-1"
+      ],
+      "specialties": [
+        "6B11380 - Вычислительная техника и программное обеспечение"
+      ],
+      "is_admin": false
     }
   }
 }

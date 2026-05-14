@@ -21,6 +21,7 @@ def get_admin_panel_kb() -> InlineKeyboardMarkup:
     builder.row(InlineKeyboardButton(text="🛂 Центр модерации", callback_data=CallbackData.ADMIN_PANEL_REVIEW))
     builder.row(InlineKeyboardButton(text="⚙️ Управление доступами", callback_data=CallbackData.ADMIN_PANEL_ACCESS))
     builder.row(InlineKeyboardButton(text="🗂 Управление группами", callback_data=CallbackData.ADMIN_PANEL_GROUPS))
+    builder.row(InlineKeyboardButton(text="📣 Рассылка по базе", callback_data=CallbackData.ADMIN_PANEL_BROADCAST))
     builder.row(InlineKeyboardButton(text="➕ Создать группу", callback_data=CallbackData.ADMIN_PANEL_CREATE_GROUP))
     return builder.as_markup()
 
@@ -99,6 +100,8 @@ def get_admin_users_kb(items: list[tuple[int, str]]) -> InlineKeyboardMarkup:
             flags.append("✅")
         if profile.get("is_admin"):
             flags.append("👑")
+        if profile.get("can_broadcast"):
+            flags.append("📣")
         suffix = f" {' '.join(flags)}" if flags else ""
         builder.row(
             InlineKeyboardButton(
@@ -115,8 +118,10 @@ def get_admin_user_actions_kb(user_id: int, profile: dict) -> InlineKeyboardMark
     notify_mark = "✅" if profile.get("can_notify") else "❌"
     review_mark = "✅" if profile.get("can_review") else "❌"
     admin_mark = "✅" if profile.get("is_admin") else "❌"
+    broadcast_mark = "✅" if profile.get("can_broadcast") else "❌"
     builder.row(InlineKeyboardButton(text=f"{notify_mark} Уведомления", callback_data=f"{CallbackData.ADMIN_TOGGLE_NOTIFY_PREFIX}{user_id}"))
     builder.row(InlineKeyboardButton(text=f"{review_mark} Модерация", callback_data=f"{CallbackData.ADMIN_TOGGLE_REVIEW_PREFIX}{user_id}"))
+    builder.row(InlineKeyboardButton(text=f"{broadcast_mark} Рассылка по базе", callback_data=f"{CallbackData.ADMIN_TOGGLE_BROADCAST_PREFIX}{user_id}"))
     builder.row(InlineKeyboardButton(text=f"{admin_mark} Админ-права", callback_data=f"{CallbackData.ADMIN_TOGGLE_ADMIN_PREFIX}{user_id}"))
     builder.row(InlineKeyboardButton(text="🎯 Назначить специальности", callback_data=f"{CallbackData.ADMIN_ASSIGN_SPECS_PREFIX}{user_id}"))
     builder.row(InlineKeyboardButton(text="🧩 Назначить группы", callback_data=f"{CallbackData.ADMIN_ASSIGN_GROUPS_PREFIX}{user_id}"))

@@ -16,7 +16,7 @@ class DocumentUpload(StatesGroup):
     waiting_for_fio = State()      # ФИО для абитуриентов без предварительной анкеты.
     waiting_for_phone = State()    # Контакт для обратной связи и обработки в приемной.
     waiting_for_source = State()   # Откуда абитуриент узнал об университете.
-    waiting_for_faculty = State()  # Выбор кафедры поступления.
+    waiting_for_faculty = State()  # Универ: кафедра; колледж: бірлестік (структурное объединение).
     waiting_for_specialty = State()  # Выбор специальности поступления.
     waiting_for_diploma = State()  # Аттестат/диплом задает базу для проверки пакета.
     waiting_for_id = State()       # Идентификация личности заявителя.
@@ -36,3 +36,16 @@ class AdminPanel(StatesGroup):
     waiting_for_group_payload = State()  # Ввод параметров для создания группы через инлайн-панель.
     waiting_for_group_name = State()  # Создание группы в выбранном контексте.
     waiting_for_group_rename = State()  # Переименование выбранной группы.
+
+
+class BroadcastFlow(StatesGroup):
+    """Мастер рассылки: сначала настраиваются фильтры (callback), затем тело сообщения."""
+
+    waiting_message = State()
+
+
+class StaffCabinetFlow(StatesGroup):
+    """Короткие сценарии из ЛК ответственного (без админ-панели)."""
+
+    reassign_enter_user_id = State()
+    reassign_enter_group = State()
