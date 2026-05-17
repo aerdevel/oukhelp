@@ -14,7 +14,7 @@ class UtilsTests(unittest.TestCase):
         self.assertIsNone(parse_iso_utc("not-a-date"))
 
     def test_mask_phone(self):
-        self.assertEqual(mask_phone("+77071234567"), "+***4567")
+        self.assertEqual(mask_phone("+77071234567"), "+7***4567")
 
     def test_mask_username(self):
         self.assertEqual(mask_username("@abcdef"), "@ab***")

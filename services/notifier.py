@@ -31,11 +31,12 @@ async def notify_responsible_new_registration(bot: Bot, user_data: dict):
     tg_username = user_data.get("tg_username")
     telegram_name = await _resolve_telegram_name(bot, user_data)
     submit_attempt = int(user_data.get("submit_attempt", 1) or 1)
-    excel_prev_icon = "✅" if bool(user_data.get("excel_account_was_existing")) else "❌"
-    excel_write_icon = "✅" if bool(user_data.get("excel_account_saved")) else "❌"
-    
-    # Определение всех получателей уведомления по группе.
-    target_chat_ids = get_responsible_ids(group or "-", specialty)
+
+    # Ручная/неизвестная группа — маршрутизация по специальности (все ответственные за спец.).
+    route_group = group or "-"
+    if user_data.get("group_manual") or user_data.get("specialty_mismatch"):
+        route_group = "-"
+    target_chat_ids = await get_responsible_ids(route_group, specialty)
     
     # Формирование текста уведомления.
     username_text = f"@{tg_username}" if tg_username else "-"
@@ -49,14 +50,18 @@ async def notify_responsible_new_registration(bot: Bot, user_data: dict):
         f"📋 ФИО: {user_data.get('fio')}\n"
         f"📞 Тел: {user_phone}\n"
         f"🔁 Попытка заявки: #{submit_attempt}\n"
-        f"📒 Excel ранее: {excel_prev_icon}\n"
-        f"💾 Excel запись: {excel_write_icon}\n"
         f"🎭 Статус: {role}\n"
         f"🏛 Кафедра: {user_data.get('faculty', '-')}\n"
         f"📖 Спец: {user_data.get('specialty', '-')}\n"
     )
     if role in {"Студент", "Выпускник", "Преподаватель"}:
-        text += f"📚 Группа: {group}\n"
+        manual_note = " (вручную, проверьте спец./группу)" if user_data.get("group_manual") else ""
+        text += f"📚 Группа: {group}{manual_note}\n"
+    assignments = user_data.get("teaching_assignments")
+    if role == "Преподаватель" and isinstance(assignments, list) and assignments:
+        from services.teaching_assignments import assignments_summary
+
+        text += f"\n📎 Зоны ответственности:\n{assignments_summary(assignments, lang='ru')}\n"
     if role == "Студент":
         text += f"🎓 Курс: {user_data.get('course')}\n"
 

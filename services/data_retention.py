@@ -7,7 +7,7 @@ from services.registration_store import get_pending_registrations, overwrite_pen
 from utils.datetime_utils import parse_iso_utc
 
 
-def cleanup_stale_pending_data(retention_days: int) -> dict[str, int]:
+async def cleanup_stale_pending_data(retention_days: int) -> dict[str, int]:
     """
     Очищает устаревшие pending-данные.
     Удаляем только pending, чтобы не ломать историю принятых/отклоненных решений.
@@ -16,7 +16,7 @@ def cleanup_stale_pending_data(retention_days: int) -> dict[str, int]:
     removed_registrations = 0
     removed_packages = 0
 
-    pending_regs = get_pending_registrations()
+    pending_regs = await get_pending_registrations()
     filtered_regs = []
     for row in pending_regs:
         created_at = parse_iso_utc(str(row.get("created_at", "")))
@@ -25,9 +25,9 @@ def cleanup_stale_pending_data(retention_days: int) -> dict[str, int]:
             continue
         filtered_regs.append(row)
     if removed_registrations:
-        overwrite_pending_registrations(filtered_regs)
+        await overwrite_pending_registrations(filtered_regs)
 
-    pending_packages = get_pending_packages()
+    pending_packages = await get_pending_packages()
     filtered_packages = {}
     for key, row in pending_packages.items():
         created_at = parse_iso_utc(str(row.get("created_at", "")))
@@ -36,7 +36,7 @@ def cleanup_stale_pending_data(retention_days: int) -> dict[str, int]:
             continue
         filtered_packages[key] = row
     if removed_packages:
-        overwrite_pending_packages(filtered_packages)
+        await overwrite_pending_packages(filtered_packages)
 
     return {
         "removed_pending_registrations": removed_registrations,

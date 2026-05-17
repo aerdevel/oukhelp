@@ -2,7 +2,16 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
 
 from core.config import settings
-from handlers import broadcast_flow, calculate, common, documents, info, registration, staff_cabinet
+from handlers import (
+    broadcast_flow,
+    calculate,
+    common,
+    documents,
+    info,
+    registration,
+    registration_groups,
+    staff_cabinet,
+)
 from middlewares.antispam import AntiSpamMiddleware
 
 
@@ -22,6 +31,7 @@ def create_dispatcher() -> Dispatcher:
     dp.callback_query.middleware(anti_spam)
     dp.include_router(common.router)
     dp.include_router(registration.router)
+    dp.include_router(registration_groups.router)
     dp.include_router(broadcast_flow.router)
     dp.include_router(staff_cabinet.router)
     dp.include_router(documents.router)

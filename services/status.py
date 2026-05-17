@@ -15,9 +15,9 @@ DOC_STATUS_LABELS = {
 }
 
 
-def build_applicant_status_text(tg_user_id: int) -> str:
-    reg = get_any_registration(tg_user_id)
-    docs = get_any_package(tg_user_id)
+async def build_applicant_status_text(tg_user_id: int) -> str:
+    reg = await get_any_registration(tg_user_id)
+    docs = await get_any_package(tg_user_id)
 
     reg_text = "не найдена"
     if reg:
@@ -34,11 +34,11 @@ def build_applicant_status_text(tg_user_id: int) -> str:
     )
 
 
-def build_moderation_queue_text(sla_hours: int = 48) -> str:
+async def build_moderation_queue_text(sla_hours: int = 48) -> str:
     now = datetime.now(timezone.utc)
     threshold = now - timedelta(hours=sla_hours)
-    reg_pending = get_pending_registrations()
-    docs_pending = get_pending_packages()
+    reg_pending = await get_pending_registrations()
+    docs_pending = await get_pending_packages()
 
     overdue_reg = 0
     for row in reg_pending:

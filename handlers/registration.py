@@ -38,6 +38,7 @@ from services.registration_store import (
     get_approved_all,
 )
 from utils.i18n import tr
+from utils.registration_flow import WORKER_PROFILE_MARKERS, is_worker_role
 from utils.validators import MIN_FIO_LEN, MIN_GROUP_NAME_LEN, normalize_phone, sanitize_text, validate_min_plaintext
 from services.study_groups import (
     add_group,
@@ -64,6 +65,10 @@ ROLE_BY_CALLBACK = {
     "role_worker": "Работник",
     "role_teacher": "Преподаватель",
 }
+
+
+def _review_back_callback(data: dict) -> str:
+    return str(data.get("review_back_callback") or CallbackData.ADMIN_PANEL)
 
 
 def _track_from_state(data: dict) -> str:
@@ -96,17 +101,28 @@ async def _send_preview(target: types.Message | types.CallbackQuery, state: FSMC
         lines.append(f"{fac_label} {user_data.get('faculty', '-')}")
     if user_data.get("specialty"):
         lines.append(f"📖 Спец: {user_data.get('specialty', '-')}")
-    if role in {"Студент", "Выпускник", "Преподаватель"}:
-        lines.append(f"📚 Группа: {user_data.get('group', '-')}")
+    assignments = user_data.get("teaching_assignments")
+    if role == "Преподаватель" and isinstance(assignments, list) and assignments:
+        from services.teaching_assignments import assignments_summary
+
+        lines.append(assignments_summary(assignments, lang=lang))
+    else:
+        teaching = user_data.get("teaching_groups") or []
+        if isinstance(teaching, list) and teaching:
+            lines.append(f"📚 Группы: {', '.join(str(g) for g in teaching)}")
+        elif role in {"Студент", "Выпускник", "Преподаватель"}:
+            lines.append(f"📚 Группа: {user_data.get('group', '-')}")
     if role == "Студент":
         lines.append(f"🎓 Курс: {user_data.get('course', '-')}")
+
+    from utils.safe_telegram import edit_or_send_text
 
     kb = ikb.get_registration_confirm_kb(lang)
     text = preview + "\n".join(lines)
     if isinstance(target, types.Message):
         await target.answer(text, reply_markup=kb)
     else:
-        await target.message.edit_text(text, reply_markup=kb)
+        await edit_or_send_text(target.message, text, reply_markup=kb)
 
 
 def _review_page_payload(items: list[dict], page: int) -> tuple[list[dict], int, int]:
@@ -117,23 +133,47 @@ def _review_page_payload(items: list[dict], page: int) -> tuple[list[dict], int,
     return items[start:end], safe_page, total_pages
 
 
-def _filter_pending_for_reviewer(user_id: int) -> list[dict]:
-    all_pending = get_pending_all()
-    if is_admin(user_id):
+async def _can_review_registration_card(user_id: int, card: dict) -> bool:
+    if await can_review(user_id, card.get("group", "-"), card.get("specialty", "-")):
+        return True
+    from services.teaching_assignments import normalize_assignments
+
+    for item in normalize_assignments(card.get("teaching_assignments")):
+        if await can_review(user_id, "-", item.get("specialty")):
+            return True
+        for grp in item.get("groups") or []:
+            if await can_review(user_id, grp, item.get("specialty")):
+                return True
+    if card.get("group_manual") or card.get("specialty_mismatch"):
+        return await can_review(user_id, "-", card.get("specialty", "-"))
+    return False
+
+
+async def _filter_pending_for_reviewer(user_id: int) -> list[dict]:
+    all_pending = await get_pending_all()
+    if await is_admin(user_id):
         return all_pending
-    return [item for item in all_pending if can_review(user_id, item.get("group", "-"), item.get("specialty", "-"))]
+    filtered: list[dict] = []
+    for item in all_pending:
+        if await _can_review_registration_card(user_id, item):
+            filtered.append(item)
+    return filtered
 
 
-def _filter_processed_for_reviewer(user_id: int) -> list[dict]:
-    all_processed = get_processed_all()
-    if is_admin(user_id):
+async def _filter_processed_for_reviewer(user_id: int) -> list[dict]:
+    all_processed = await get_processed_all()
+    if await is_admin(user_id):
         return all_processed
-    return [item for item in all_processed if can_review(user_id, item.get("group", "-"), item.get("specialty", "-"))]
+    filtered: list[dict] = []
+    for item in all_processed:
+        if await _can_review_registration_card(user_id, item):
+            filtered.append(item)
+    return filtered
 
 
-def _admin_candidates() -> list[tuple[int, str]]:
-    approved = get_approved_all()
-    managers = list_managers()
+async def _admin_candidates() -> list[tuple[int, str]]:
+    approved = await get_approved_all()
+    managers = await list_managers()
     items: dict[int, str] = {}
     for row in approved:
         user_id = row.get("tg_user_id")
@@ -144,6 +184,19 @@ def _admin_candidates() -> list[tuple[int, str]]:
     for user_id, _ in managers:
         items.setdefault(int(user_id), f"ID {user_id}")
     return sorted(items.items(), key=lambda pair: pair[1].lower())
+
+
+async def _admin_users_kb_caches(
+    items: list[tuple[int, str]],
+) -> tuple[dict[int, dict], dict[int, dict]]:
+    approved_by_id = {
+        int(row["tg_user_id"]): row
+        for row in await get_approved_all()
+        if row.get("tg_user_id") is not None
+    }
+    approved_cache = {uid: approved_by_id.get(uid, {}) for uid, _ in items}
+    permissions_cache = {uid: await get_user_permissions(uid) for uid, _ in items}
+    return approved_cache, permissions_cache
 
 
 def _specialties_page_payload(page: int, specialties: list[str]) -> tuple[list[str], int, int]:
@@ -215,23 +268,25 @@ async def start_reg(callback: types.CallbackQuery, state: FSMContext):
     back_callback = CallbackData.LEVEL_COLL if track == "college" else CallbackData.LEVEL_UNI
     text = tr(lang, "🚀 Начнем! Введите ваше ФИО:", "🚀 Бастаймыз! Толық аты-жөніңізді енгізіңіз:")
     await state.update_data(tg_user_id=callback.from_user.id, tg_full_name=callback.from_user.full_name, tg_username=callback.from_user.username)
-    if callback.message.text:
-        await callback.message.edit_text(text, reply_markup=ikb.get_back_kb(lang, back_callback))
-    else:
-        await callback.message.answer(text, reply_markup=ikb.get_back_kb(lang, back_callback))
+    from utils.safe_telegram import edit_or_send_text
+
+    await edit_or_send_text(callback.message, text, reply_markup=ikb.get_back_kb(lang, back_callback))
     await state.set_state(Form.fio)
     await callback.answer()
 
 
 @router.callback_query(F.data == CallbackData.REG_BACK_PHONE)
 async def reg_back_to_phone(callback: types.CallbackQuery, state: FSMContext):
+    from utils.safe_telegram import edit_or_send_text
+
     data = await state.get_data()
     lang = data.get("locale", "ru")
     track = _track_from_state(data)
     back_menu = CallbackData.LEVEL_COLL if track == "college" else CallbackData.LEVEL_UNI
     await state.update_data(role=None, phone="")
     await state.set_state(Form.phone)
-    await callback.message.edit_text(
+    await edit_or_send_text(
+        callback.message,
         tr(
             lang,
             "Отправьте номер телефона (можно кнопкой контакта ниже):",
@@ -252,15 +307,17 @@ async def reg_back_to_phone(callback: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == CallbackData.REG_BACK_PREVIEW)
 async def reg_back_from_preview(callback: types.CallbackQuery, state: FSMContext):
+    from utils.safe_telegram import edit_or_send_text
+
     data = await state.get_data()
     lang = data.get("locale", "ru")
     track = _track_from_state(data)
     role = data.get("role")
-    if role == "Работник":
-        await state.update_data(faculty="-", specialty="-", course="-", group="-")
+    if is_worker_role(role):
         await state.set_state(Form.role)
-        await callback.message.edit_text(
-            tr(lang, "Выберите ваш статус:", "Статусыңызды таңдаңыз:"),
+        await edit_or_send_text(
+            callback.message,
+            tr(lang, "Выберите ваш статус:", "Мәртебеңізді таңдаңыз:"),
             reply_markup=ikb.get_role_kb(lang),
         )
         await callback.answer()
@@ -269,9 +326,10 @@ async def reg_back_from_preview(callback: types.CallbackQuery, state: FSMContext
         specialty = str(data.get("specialty", "")).strip()
         course = str(data.get("course", "")).strip()
         await state.set_state(Form.group)
-        groups = list_groups(track=track, specialty=specialty, course=str(course))
+        groups = await list_groups(track=track, specialty=specialty, course=str(course))
         if groups:
-            await callback.message.edit_text(
+            await edit_or_send_text(
+                callback.message,
                 tr(
                     lang,
                     "Выберите группу из списка или введите вручную:",
@@ -280,25 +338,20 @@ async def reg_back_from_preview(callback: types.CallbackQuery, state: FSMContext
                 reply_markup=ikb.get_group_select_kb(lang, groups),
             )
         else:
-            await callback.message.edit_text(
+            await edit_or_send_text(
+                callback.message,
                 tr(
                     lang,
                     "Введите номер вашей группы (например, ИТ-21-1):",
                     "Топ нөмірін енгізіңіз (мысалы, ИТ-21-1):",
-                )
+                ),
             )
         await callback.answer()
         return
     if role in {"Выпускник", "Преподаватель"}:
-        await state.set_state(Form.group)
-        await callback.message.edit_text(
-            tr(
-                lang,
-                "Введите номер группы (например, ВТПО 25-1):",
-                "Топ нөмірін енгізіңіз (мысалы, ВТПО 25-1):",
-            )
-        )
-        await callback.answer()
+        from handlers.registration_groups import enter_teaching_groups_flow
+
+        await enter_teaching_groups_flow(callback, state)
         return
     await callback.answer(
         tr(lang, "Вернитесь в меню и начните регистрацию заново.", "Мәзірге оралып, тіркеуді қайта бастаңыз."),
@@ -387,7 +440,7 @@ async def _process_phone_input(message: types.Message, state: FSMContext):
             )
         )
         return
-    owner = find_phone_owner(normalized_phone)
+    owner = await find_phone_owner(normalized_phone)
     if owner and _safe_tg_id(owner.get("tg_user_id")) not in {0, _safe_tg_id(message.from_user.id)}:
         await message.answer(
             tr(
@@ -439,17 +492,18 @@ async def process_role(callback: types.CallbackQuery, state: FSMContext):
     track = _track_from_state(data)
     role = ROLE_BY_CALLBACK[callback.data]
     await state.update_data(role=role)
-    if role == "Работник":
-        await state.update_data(faculty="-", specialty="-", course="-", group="-")
+    if is_worker_role(role):
+        await state.update_data(**WORKER_PROFILE_MARKERS)
         await _send_preview(callback, state)
-    else:
-        text = (
-            tr(lang, "Выберите бірлестік (структурное объединение):", "Бірлестікті таңдаңыз:")
-            if track == "college"
-            else tr(lang, "Выберите кафедру:", "Кафедраны таңдаңыз:")
-        )
-        await callback.message.edit_text(text, reply_markup=ikb.get_faculties_kb(lang, track=track))
-        await state.set_state(Form.specialty)
+        await callback.answer()
+        return
+    text = (
+        tr(lang, "Выберите бірлестік (структурное объединение):", "Бірлестікті таңдаңыз:")
+        if track == "college"
+        else tr(lang, "Выберите кафедру:", "Кафедраны таңдаңыз:")
+    )
+    await callback.message.edit_text(text, reply_markup=ikb.get_faculties_kb(lang, track=track))
+    await state.set_state(Form.specialty)
     await callback.answer()
 
 
@@ -468,8 +522,8 @@ async def process_role_text_fallback(message: types.Message, state: FSMContext):
     lang = data.get("locale", "ru")
     track = _track_from_state(data)
     await state.update_data(role=role)
-    if role == "Работник":
-        await state.update_data(faculty="-", specialty="-", course="-", group="-")
+    if is_worker_role(role):
+        await state.update_data(**WORKER_PROFILE_MARKERS)
         await _send_preview(message, state)
         return
     await message.answer(
@@ -489,6 +543,11 @@ async def process_role_text_fallback(message: types.Message, state: FSMContext):
 async def process_faculty(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     lang = data.get("locale", "ru")
+    if is_worker_role(data.get("role")):
+        await state.update_data(**WORKER_PROFILE_MARKERS)
+        await _send_preview(callback, state)
+        await callback.answer()
+        return
     track = _track_from_state(data)
     faculty_idx = callback.data.replace(CallbackData.FAC_PREFIX, "")
     faculties = list(get_specialties_by_department(lang, track).keys())
@@ -559,6 +618,11 @@ async def process_specialty_page(callback: types.CallbackQuery, state: FSMContex
 async def process_specialty(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     lang = data.get("locale", "ru")
+    if is_worker_role(data.get("role")):
+        await state.update_data(**WORKER_PROFILE_MARKERS)
+        await _send_preview(callback, state)
+        await callback.answer()
+        return
     track = _track_from_state(data)
     role = data.get("role")
     payload = callback.data.replace(CallbackData.SPEC_PREFIX, "")
@@ -586,11 +650,10 @@ async def process_specialty(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.edit_text("На каком курсе вы учитесь?" if lang == "ru" else "Қай курста оқисыз?", reply_markup=ikb.get_course_kb(lang))
         await state.set_state(Form.course)
     elif role in {"Выпускник", "Преподаватель"}:
-        await state.update_data(course="-")
-        await callback.message.edit_text(
-            "Введите номер группы (например, ВТПО 25-1):" if lang == "ru" else "Топ нөмірін енгізіңіз (мысалы, ВТПО 25-1):"
-        )
-        await state.set_state(Form.group)
+        from handlers.registration_groups import enter_teaching_groups_flow
+
+        await enter_teaching_groups_flow(callback, state)
+        return
     else:
         await state.update_data(course="-", group="-")
         await _send_preview(callback, state)
@@ -601,6 +664,14 @@ async def process_specialty(callback: types.CallbackQuery, state: FSMContext):
 async def back_to_specialty(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     lang = data.get("locale", "ru")
+    if is_worker_role(data.get("role")):
+        await state.set_state(Form.role)
+        await callback.message.edit_text(
+            tr(lang, "Выберите ваш статус:", "Мәртебеңізді таңдаңыз:"),
+            reply_markup=ikb.get_role_kb(lang),
+        )
+        await callback.answer()
+        return
     track = _track_from_state(data)
     prompt = (
         tr(lang, "Выберите бірлестік (структурное объединение):", "Бірлестікті таңдаңыз:")
@@ -616,6 +687,14 @@ async def back_to_specialty(callback: types.CallbackQuery, state: FSMContext):
 async def back_to_faculty(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     lang = data.get("locale", "ru")
+    if is_worker_role(data.get("role")):
+        await state.set_state(Form.role)
+        await callback.message.edit_text(
+            tr(lang, "Выберите ваш статус:", "Мәртебеңізді таңдаңыз:"),
+            reply_markup=ikb.get_role_kb(lang),
+        )
+        await callback.answer()
+        return
     track = _track_from_state(data)
     prompt = (
         tr(lang, "Выберите бірлестік (структурное объединение):", "Бірлестікті таңдаңыз:")
@@ -635,7 +714,7 @@ async def process_course(callback: types.CallbackQuery, state: FSMContext):
     lang = data.get("locale", "ru")
     track = _track_from_state(data)
     specialty = str(data.get("specialty", "")).strip()
-    groups = list_groups(track=track, specialty=specialty, course=str(course_val))
+    groups = await list_groups(track=track, specialty=specialty, course=str(course_val))
     if groups:
         await callback.message.edit_text(
             tr(
@@ -659,7 +738,7 @@ async def process_group_pick(callback: types.CallbackQuery, state: FSMContext):
     if not group_name:
         await callback.answer("Некорректная группа.", show_alert=True)
         return
-    await state.update_data(group=group_name)
+    await state.update_data(group=group_name, group_manual=False)
     await _send_preview(callback, state)
     await callback.answer()
 
@@ -668,8 +747,13 @@ async def process_group_pick(callback: types.CallbackQuery, state: FSMContext):
 async def process_group_manual(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     lang = data.get("locale", "ru")
+    await state.update_data(group_manual=True)
     await callback.message.edit_text(
-        "Введите номер вашей группы (например, ИТ-21-1):" if lang == "ru" else "Топ нөмірін енгізіңіз (мысалы, ИТ-21-1):"
+        tr(
+            lang,
+            "Введите группу вручную. Заявка уйдёт всем ответственным за вашу специальность.",
+            "Топты қолмен енгізіңіз. Өтінім мамандық бойынша жауаптыларға жіберіледі.",
+        )
     )
     await callback.answer()
 
@@ -681,7 +765,14 @@ async def process_group(message: types.Message, state: FSMContext):
         lang = user_data.get("locale", "ru")
         await message.answer("❌ Введите номер группы текстом." if lang == "ru" else "❌ Топ нөмірін мәтінмен енгізіңіз.")
         return
-    await state.update_data(group=sanitize_text(message.text))
+    data = await state.get_data()
+    track = _track_from_state(data)
+    specialty = str(data.get("specialty", "")).strip()
+    course = str(data.get("course", "")).strip()
+    group_val = sanitize_text(message.text)
+    catalog = await list_groups(track=track, specialty=specialty, course=course)
+    manual = bool(data.get("group_manual")) or (bool(catalog) and group_val not in catalog)
+    await state.update_data(group=group_val, group_manual=manual)
     await _send_preview(message, state)
 
 
@@ -691,14 +782,11 @@ async def confirm_registration(callback: types.CallbackQuery, state: FSMContext)
     lang = user_data.get("locale", "ru")
     user_data["admission_track"] = _track_from_state(user_data)
     user_data.setdefault("is_grant", False)
-    add_pending_registration(user_data)
+    await add_pending_registration(user_data)
     user_data["status"] = "pending"
-    pending_card = get_pending_by_tg_user_id(callback.from_user.id) or {}
+    pending_card = await get_pending_by_tg_user_id(callback.from_user.id) or {}
     if pending_card:
         user_data["submit_attempt"] = int(pending_card.get("submit_attempt", 1) or 1)
-    excel_result = upsert_registration_account_record(user_data)
-    user_data["excel_account_saved"] = bool(excel_result.get("ok"))
-    user_data["excel_account_was_existing"] = bool(excel_result.get("was_existing"))
     await notify_responsible_new_registration(callback.bot, user_data)
     text = (
         "✅ Заявка отправлена. Ожидайте, с вами свяжется ответственный менеджер."
@@ -706,7 +794,9 @@ async def confirm_registration(callback: types.CallbackQuery, state: FSMContext)
         else "✅ Өтінім жіберілді. Жауапты менеджер сізбен байланысады."
     )
     menu_callback = CallbackData.LEVEL_COLL if user_data.get("admission_track") == "college" else CallbackData.LEVEL_UNI
-    await callback.message.edit_text(text, reply_markup=ikb.get_back_kb(lang, menu_callback))
+    from utils.safe_telegram import edit_or_send_text
+
+    await edit_or_send_text(callback.message, text, reply_markup=ikb.get_back_kb(lang, menu_callback))
     await state.clear()
     await callback.answer()
 
@@ -715,81 +805,77 @@ async def confirm_registration(callback: types.CallbackQuery, state: FSMContext)
 async def my_cabinet(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     lang = data.get("locale", "ru")
-    profile = get_approved_user(callback.from_user.id)
-    if not profile:
+    from services.cabinet import build_cabinet_view
+    from utils.safe_telegram import edit_or_send_text
+
+    view = await build_cabinet_view(callback.from_user.id, lang=lang)
+    if not view:
         await callback.answer(tr(lang, "Кабинет доступен после одобрения регистрации.", "Кабинет тіркеу мақұлданғаннан кейін қолжетімді."), show_alert=True)
         return
-    text = (
-        "🧾 Мой кабинет\n\n"
-        f"👤 ФИО: {profile.get('fio', '-')}\n"
-        f"📞 Тел: {profile.get('phone', '-')}\n"
-        f"🎭 Статус: {profile.get('role', '-')}\n"
-        f"🏛 Кафедра: {profile.get('faculty', '-')}\n"
-        f"📖 Спец: {profile.get('specialty', '-')}\n"
-        f"🎓 Курс: {profile.get('course', '-')}\n"
-        f"📚 Группа: {profile.get('group', '-')}"
-    )
-    menu_callback = CallbackData.LEVEL_COLL if str(profile.get("admission_track", "uni")) == "college" else CallbackData.LEVEL_UNI
-    perms = get_user_permissions(callback.from_user.id)
-    show_staff_scope = bool(is_admin(callback.from_user.id) or perms.get("can_review"))
-    show_targeted_broadcast = bool(can_use_targeted_broadcast(callback.from_user.id) and not is_admin(callback.from_user.id))
-    cabinet_markup = ikb.get_staff_cabinet_kb(
-        lang,
-        show_review=is_responsible_user(callback.from_user.id),
-        show_staff_scope_tools=show_staff_scope,
-        show_targeted_broadcast=show_targeted_broadcast,
-        back_callback=menu_callback,
-    )
-    await callback.message.edit_text(text, reply_markup=cabinet_markup)
+    text, cabinet_markup = view
+    await edit_or_send_text(callback.message, text, reply_markup=cabinet_markup)
     await callback.answer()
 
 
 @router.callback_query(F.data == CallbackData.REVIEW_REGISTRATIONS)
 async def review_registrations(callback: types.CallbackQuery, state: FSMContext):
-    if not is_responsible_user(callback.from_user.id):
+    if not await is_responsible_user(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
-    items = _filter_pending_for_reviewer(callback.from_user.id)
+    items = await _filter_pending_for_reviewer(callback.from_user.id)
     data = await state.get_data()
     lang = data.get("locale", "ru")
     if not items:
         await callback.message.edit_text(
             tr(lang, "Сейчас нет необработанных заявок.", "Қазір өңделмеген өтінім жоқ."),
-            reply_markup=ikb.get_review_list_kb([], 0, 1, processed=False),
+            reply_markup=ikb.get_review_list_kb([], 0, 1, processed=False, back_callback=_review_back_callback(data)),
         )
         await callback.answer()
         return
     page_items, page, total_pages = _review_page_payload(items, 0)
     await callback.message.edit_text(
         tr(lang, "🛂 Центр модерации: необработанные", "🛂 Модерация орталығы: өңделмеген"),
-        reply_markup=ikb.get_review_list_kb(page_items, page, total_pages, processed=False),
+        reply_markup=ikb.get_review_list_kb(
+            page_items, page, total_pages, processed=False, back_callback=_review_back_callback(data)
+        ),
     )
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith(CallbackData.REVIEW_PAGE_PREFIX))
-async def review_page(callback: types.CallbackQuery):
-    if not is_responsible_user(callback.from_user.id):
+async def review_page(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_responsible_user(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     payload = callback.data.replace(CallbackData.REVIEW_PAGE_PREFIX, "")
     processed_raw, _, page_raw = payload.partition("_")
     processed = processed_raw == "1"
     page = int(page_raw) if page_raw.isdigit() else 0
-    items = _filter_processed_for_reviewer(callback.from_user.id) if processed else _filter_pending_for_reviewer(callback.from_user.id)
+    items = (
+        await _filter_processed_for_reviewer(callback.from_user.id)
+        if processed
+        else await _filter_pending_for_reviewer(callback.from_user.id)
+    )
     if not items:
         await callback.answer("Список пуст.", show_alert=True)
         return
     page_items, safe_page, total_pages = _review_page_payload(items, page)
+    data = await state.get_data()
     await callback.message.edit_reply_markup(
-        reply_markup=ikb.get_review_list_kb(page_items, safe_page, total_pages, processed=processed)
+        reply_markup=ikb.get_review_list_kb(
+            page_items,
+            safe_page,
+            total_pages,
+            processed=processed,
+            back_callback=_review_back_callback(data),
+        )
     )
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith(CallbackData.REVIEW_OPEN_PREFIX))
 async def review_open(callback: types.CallbackQuery, state: FSMContext):
-    if not is_responsible_user(callback.from_user.id):
+    if not await is_responsible_user(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     tg_user_id_raw = callback.data.replace(CallbackData.REVIEW_OPEN_PREFIX, "")
@@ -797,11 +883,11 @@ async def review_open(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer("Некорректный идентификатор.", show_alert=True)
         return
     tg_user_id = int(tg_user_id_raw)
-    card = get_pending_by_tg_user_id(tg_user_id)
+    card = await get_pending_by_tg_user_id(tg_user_id)
     if not card:
         await callback.answer("Заявка уже обработана. Откройте вкладку обработанных.", show_alert=True)
         return
-    if not is_admin(callback.from_user.id) and not can_review(
+    if not await is_admin(callback.from_user.id) and not await can_review(
         callback.from_user.id,
         card.get("group", "-"),
         card.get("specialty", "-"),
@@ -828,10 +914,13 @@ async def review_open(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith(CallbackData.REVIEW_ACTION_PREFIX))
-@router.callback_query(F.data.startswith("reg_"))
+@router.callback_query(
+    F.data.startswith(CallbackData.REVIEW_ACTION_PREFIX)
+    | F.data.startswith("reg_approve_")
+    | F.data.startswith("reg_deny_")
+)
 async def review_action(callback: types.CallbackQuery, state: FSMContext):
-    if not is_responsible_user(callback.from_user.id):
+    if not await is_responsible_user(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     data = await state.get_data()
@@ -852,7 +941,7 @@ async def review_action(callback: types.CallbackQuery, state: FSMContext):
         if not phone:
             await callback.answer("Некорректная заявка.", show_alert=True)
             return
-        pending = [item for item in get_pending_all() if item.get("phone") == phone]
+        pending = [item for item in await get_pending_all() if item.get("phone") == phone]
         if len(pending) > 1:
             await callback.answer("Найдено несколько заявок с этим телефоном. Откройте карточку через список.", show_alert=True)
             return
@@ -860,32 +949,75 @@ async def review_action(callback: types.CallbackQuery, state: FSMContext):
     if target_user_id is None:
         await callback.answer("Заявка уже обработана.", show_alert=True)
         return
-    card = get_pending_by_tg_user_id(target_user_id)
+    card = await get_pending_by_tg_user_id(target_user_id)
     if not card:
         await callback.answer("Заявка уже обработана. Откройте вкладку обработанных.", show_alert=True)
         return
-    if (not is_admin(callback.from_user.id)) and (not can_review(callback.from_user.id, card.get("group", "-"), card.get("specialty", "-"))):
+    if (not await is_admin(callback.from_user.id)) and (not await _can_review_registration_card(callback.from_user.id, card)):
         await callback.answer("Нет доступа к этой группе.", show_alert=True)
         return
     phone_value = str(card.get("phone", ""))
     if action == "approve":
-        approved = approve_registration(phone_value, callback.from_user.id, callback.from_user.username)
+        approved = await approve_registration(phone_value, callback.from_user.id, callback.from_user.username)
         if not approved:
             await callback.answer("Заявка уже обработана.", show_alert=True)
             return
+        role_name = str(approved.get("role", ""))
+        from services.teaching_assignments import flatten_for_profile, normalize_assignments
+
+        assignments = normalize_assignments(approved.get("teaching_assignments"))
+        if role_name == "Преподаватель" and assignments:
+            flat = flatten_for_profile(assignments)
+            specs = sorted({a["specialty"] for a in assignments})
+            facs = sorted({a["faculty"] for a in assignments})
+            groups_acl = flat.get("teaching_groups") or []
+            try:
+                await set_user_permissions(
+                    callback.from_user.id,
+                    int(approved["tg_user_id"]),
+                    groups=groups_acl,
+                    specialties=specs,
+                    faculties=facs,
+                    can_review=True,
+                    can_notify=True,
+                )
+            except PermissionError:
+                pass
+        elif role_name == "Работник":
+            try:
+                await set_user_permissions(
+                    callback.from_user.id,
+                    int(approved["tg_user_id"]),
+                    can_notify=True,
+                )
+            except PermissionError:
+                pass
+        else:
+            teaching = approved.get("teaching_groups") or []
+            if isinstance(teaching, list) and teaching and role_name in {"Выпускник"}:
+                try:
+                    await set_user_permissions(
+                        callback.from_user.id,
+                        int(approved["tg_user_id"]),
+                        groups=teaching,
+                        can_review=True,
+                        can_notify=True,
+                    )
+                except PermissionError:
+                    pass
         upsert_registration_account_record(approved)
         try:
             await callback.bot.send_message(int(approved.get("tg_user_id")), tr(lang, "✅ Ваша регистрация одобрена. Теперь доступен раздел «Мой кабинет».", "✅ Тіркелуіңіз мақұлданды. Енді «Жеке кабинет» бөлімі қолжетімді."))
         except Exception as err:
             logging.warning("Не удалось уведомить пользователя %s об одобрении регистрации: %s", approved.get("tg_user_id"), err)
-        append_audit_event(
+        await append_audit_event(
             "registration_approved",
             callback.from_user.id,
             {"phone": phone_value, "tg_user_id": approved.get("tg_user_id")},
         )
         await callback.message.edit_text("✅ Заявка одобрена.")
     elif action == "deny":
-        denied = deny_registration(phone_value, callback.from_user.id, callback.from_user.username)
+        denied = await deny_registration(phone_value, callback.from_user.id, callback.from_user.username)
         if not denied:
             await callback.answer("Заявка уже обработана.", show_alert=True)
             return
@@ -894,7 +1026,7 @@ async def review_action(callback: types.CallbackQuery, state: FSMContext):
             await callback.bot.send_message(int(denied.get("tg_user_id")), tr(lang, "❌ Заявка отклонена. Пожалуйста, заполните анкету повторно.", "❌ Өтінім қабылданбады. Анкетаны қайта толтырыңыз."))
         except Exception as err:
             logging.warning("Не удалось уведомить пользователя %s об отклонении регистрации: %s", denied.get("tg_user_id"), err)
-        append_audit_event(
+        await append_audit_event(
             "registration_denied",
             callback.from_user.id,
             {"phone": phone_value, "tg_user_id": denied.get("tg_user_id")},
@@ -908,7 +1040,7 @@ async def review_action(callback: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith(CallbackData.REVIEW_DONE_OPEN_PREFIX))
 async def review_done_open(callback: types.CallbackQuery):
-    if not is_responsible_user(callback.from_user.id):
+    if not await is_responsible_user(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     tg_user_id_raw = callback.data.replace(CallbackData.REVIEW_DONE_OPEN_PREFIX, "")
@@ -916,7 +1048,14 @@ async def review_done_open(callback: types.CallbackQuery):
         await callback.answer("Некорректный идентификатор.", show_alert=True)
         return
     tg_user_id = int(tg_user_id_raw)
-    card = next((row for row in _filter_processed_for_reviewer(callback.from_user.id) if int(row.get("tg_user_id", 0)) == tg_user_id), None)
+    card = next(
+        (
+            row
+            for row in await _filter_processed_for_reviewer(callback.from_user.id)
+            if int(row.get("tg_user_id", 0)) == tg_user_id
+        ),
+        None,
+    )
     if not card:
         await callback.answer("Заявка не найдена.", show_alert=True)
         return
@@ -938,17 +1077,30 @@ async def review_done_open(callback: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith(CallbackData.REVIEW_TAB_PREFIX))
 async def review_tab(callback: types.CallbackQuery, state: FSMContext):
-    if not is_responsible_user(callback.from_user.id):
+    if not await is_responsible_user(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     data = await state.get_data()
     lang = data.get("locale", "ru")
     tab_raw = callback.data.replace(CallbackData.REVIEW_TAB_PREFIX, "")
     processed = tab_raw == "1"
-    items = _filter_processed_for_reviewer(callback.from_user.id) if processed else _filter_pending_for_reviewer(callback.from_user.id)
+    items = (
+        await _filter_processed_for_reviewer(callback.from_user.id)
+        if processed
+        else await _filter_pending_for_reviewer(callback.from_user.id)
+    )
     page_items, page, total_pages = _review_page_payload(items, 0)
     title = tr(lang, "✅ Обработанные заявки" if processed else "⏳ Необработанные заявки", "✅ Өңделген өтінімдер" if processed else "⏳ Өңделмеген өтінімдер")
-    await callback.message.edit_text(title, reply_markup=ikb.get_review_list_kb(page_items, page, total_pages, processed=processed))
+    await callback.message.edit_text(
+        title,
+        reply_markup=ikb.get_review_list_kb(
+            page_items,
+            page,
+            total_pages,
+            processed=processed,
+            back_callback=_review_back_callback(data),
+        ),
+    )
     await callback.answer()
 
 
@@ -961,55 +1113,62 @@ async def noop_callback(callback: types.CallbackQuery):
 async def my_cabinet_text(message: types.Message, state: FSMContext):
     data = await state.get_data()
     lang = data.get("locale", "ru")
-    profile = get_approved_user(message.from_user.id)
-    if not profile:
+    from services.cabinet import build_cabinet_view
+
+    view = await build_cabinet_view(message.from_user.id, lang=lang)
+    if not view:
         await message.answer(tr(lang, "Кабинет доступен после одобрения регистрации.", "Кабинет тіркеу мақұлданғаннан кейін қолжетімді."))
         return
-    await message.answer(
-        "🧾 Мой кабинет\n\n"
-        f"👤 ФИО: {profile.get('fio', '-')}\n"
-        f"📞 Тел: {profile.get('phone', '-')}\n"
-        f"🎭 Статус: {profile.get('role', '-')}\n"
-        f"🏛 Кафедра: {profile.get('faculty', '-')}\n"
-        f"📖 Спец: {profile.get('specialty', '-')}\n"
-        f"🎓 Курс: {profile.get('course', '-')}\n"
-        f"📚 Группа: {profile.get('group', '-')}"
-    )
+    text, cabinet_markup = view
+    await message.answer(text, reply_markup=cabinet_markup)
 
 
 @router.message(F.text.in_(["🛂 Центр модерации", "🛂 Модерация орталығы"]))
 async def review_registrations_text(message: types.Message, state: FSMContext):
-    if not is_responsible_user(message.from_user.id):
+    if not await is_responsible_user(message.from_user.id):
         await message.answer("Нет доступа.")
         return
     data = await state.get_data()
     lang = data.get("locale", "ru")
-    items = _filter_pending_for_reviewer(message.from_user.id)
+    items = await _filter_pending_for_reviewer(message.from_user.id)
     if not items:
-        await message.answer(tr(lang, "Сейчас нет необработанных заявок.", "Қазір өңделмеген өтінім жоқ."), reply_markup=ikb.get_review_list_kb([], 0, 1, processed=False))
+        await message.answer(
+            tr(lang, "Сейчас нет необработанных заявок.", "Қазір өңделмеген өтінім жоқ."),
+            reply_markup=ikb.get_review_list_kb([], 0, 1, processed=False, back_callback=_review_back_callback(data)),
+        )
         return
     page_items, page, total_pages = _review_page_payload(items, 0)
     await message.answer(
         tr(lang, "🛂 Центр модерации: необработанные", "🛂 Модерация орталығы: өңделмеген"),
-        reply_markup=ikb.get_review_list_kb(page_items, page, total_pages, processed=False),
+        reply_markup=ikb.get_review_list_kb(
+            page_items, page, total_pages, processed=False, back_callback=_review_back_callback(data)
+        ),
     )
 
 
 @router.message(F.text.in_(["⚙️ Управление доступами", "⚙️ Қолжетімділікті басқару"]))
 async def admin_access_panel(message: types.Message):
-    if not is_admin(message.from_user.id):
+    if not await is_admin(message.from_user.id):
         await message.answer("Нет доступа.")
         return
-    items = _admin_candidates()
+    items = await _admin_candidates()
     if not items:
         await message.answer("Пока нет назначенных пользователей.")
         return
-    await message.answer("⚙️ Выберите пользователя для изменения прав:", reply_markup=ikb.get_admin_users_kb(items))
+    approved_cache, permissions_cache = await _admin_users_kb_caches(items)
+    await message.answer(
+        "⚙️ Выберите пользователя для изменения прав:",
+        reply_markup=ikb.get_admin_users_kb(
+            items,
+            approved_cache=approved_cache,
+            permissions_cache=permissions_cache,
+        ),
+    )
 
 
 @router.message(F.text.in_(["🛠 Админ панель", "🛠 Админ панелі"]))
 async def admin_panel(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
+    if not await is_admin(message.from_user.id):
         await message.answer("Нет доступа.")
         return
     await state.set_state(None)
@@ -1018,7 +1177,7 @@ async def admin_panel(message: types.Message, state: FSMContext):
 
 @router.callback_query(F.data == CallbackData.ADMIN_PANEL)
 async def admin_panel_callback(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     await state.set_state(None)
@@ -1028,10 +1187,10 @@ async def admin_panel_callback(callback: types.CallbackQuery, state: FSMContext)
 
 @router.callback_query(F.data == CallbackData.ADMIN_PANEL_REVIEW)
 async def admin_panel_review(callback: types.CallbackQuery):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
-    items = _filter_pending_for_reviewer(callback.from_user.id)
+    items = await _filter_pending_for_reviewer(callback.from_user.id)
     if not items:
         await callback.message.edit_text(
             "Сейчас нет необработанных заявок.",
@@ -1049,24 +1208,29 @@ async def admin_panel_review(callback: types.CallbackQuery):
 
 @router.callback_query(F.data == CallbackData.ADMIN_PANEL_ACCESS)
 async def admin_panel_access(callback: types.CallbackQuery):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
-    items = _admin_candidates()
+    items = await _admin_candidates()
     if not items:
         await callback.message.edit_text("Пока нет назначенных пользователей.")
         await callback.answer()
         return
+    approved_cache, permissions_cache = await _admin_users_kb_caches(items)
     await callback.message.edit_text(
         "⚙️ Выберите пользователя для изменения прав:",
-        reply_markup=ikb.get_admin_users_kb(items),
+        reply_markup=ikb.get_admin_users_kb(
+            items,
+            approved_cache=approved_cache,
+            permissions_cache=permissions_cache,
+        ),
     )
     await callback.answer()
 
 
 @router.callback_query(F.data == CallbackData.ADMIN_PANEL_CREATE_GROUP)
 async def admin_panel_create_group(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     await state.update_data(**{ADMIN_GROUP_MGMT_CTX_KEY: {"action": "create"}})
@@ -1087,7 +1251,7 @@ async def admin_panel_create_group(callback: types.CallbackQuery, state: FSMCont
 
 @router.callback_query(F.data == CallbackData.ADMIN_PANEL_GROUPS)
 async def admin_panel_groups(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     await state.update_data(**{ADMIN_GROUP_MGMT_CTX_KEY: {}})
@@ -1108,7 +1272,7 @@ async def admin_panel_groups(callback: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith(CallbackData.ADMIN_GROUP_MGMT_TRACK_PREFIX))
 async def admin_group_mgmt_track(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     track = callback.data.replace(CallbackData.ADMIN_GROUP_MGMT_TRACK_PREFIX, "")
@@ -1128,7 +1292,7 @@ async def admin_group_mgmt_track(callback: types.CallbackQuery, state: FSMContex
 
 @router.callback_query(F.data.startswith(CallbackData.ADMIN_GROUP_MGMT_FAC_PREFIX))
 async def admin_group_mgmt_fac(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     state_data = await state.get_data()
@@ -1156,7 +1320,7 @@ async def admin_group_mgmt_fac(callback: types.CallbackQuery, state: FSMContext)
 
 @router.callback_query(F.data.startswith(CallbackData.ADMIN_GROUP_MGMT_SPEC_PREFIX))
 async def admin_group_mgmt_spec(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     state_data = await state.get_data()
@@ -1182,7 +1346,7 @@ async def admin_group_mgmt_spec(callback: types.CallbackQuery, state: FSMContext
 
 @router.callback_query(F.data.startswith(CallbackData.ADMIN_GROUP_MGMT_COURSE_PREFIX))
 async def admin_group_mgmt_course(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     course = callback.data.replace(CallbackData.ADMIN_GROUP_MGMT_COURSE_PREFIX, "")
@@ -1191,7 +1355,7 @@ async def admin_group_mgmt_course(callback: types.CallbackQuery, state: FSMConte
     track = ctx.get("track", "uni")
     faculty = ctx.get("faculty", "")
     specialty = ctx.get("specialty", "")
-    rows = list_groups_detailed(track=track, faculty=faculty, specialty=specialty, course=course)
+    rows = await list_groups_detailed(track=track, faculty=faculty, specialty=specialty, course=course)
     if str(ctx.get("action", "")) == "create":
         await state.update_data(**{ADMIN_GROUP_MGMT_CTX_KEY: {**ctx, "course": course}})
         await state.set_state(AdminPanel.waiting_for_group_name)
@@ -1220,7 +1384,7 @@ async def admin_group_mgmt_course(callback: types.CallbackQuery, state: FSMConte
 
 @router.callback_query(F.data == CallbackData.ADMIN_GROUP_MGMT_CREATE)
 async def admin_group_mgmt_create(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     await state.set_state(AdminPanel.waiting_for_group_name)
@@ -1230,7 +1394,7 @@ async def admin_group_mgmt_create(callback: types.CallbackQuery, state: FSMConte
 
 @router.message(AdminPanel.waiting_for_group_name)
 async def admin_group_mgmt_create_name(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
+    if not await is_admin(message.from_user.id):
         await message.answer("Нет доступа.")
         await state.set_state(None)
         return
@@ -1240,7 +1404,7 @@ async def admin_group_mgmt_create_name(message: types.Message, state: FSMContext
         return
     state_data = await state.get_data()
     ctx = _get_group_mgmt_context(state_data)
-    ok = add_group(
+    ok = await add_group(
         track=ctx.get("track", "uni"),
         faculty=ctx.get("faculty", ""),
         specialty=ctx.get("specialty", ""),
@@ -1257,7 +1421,7 @@ async def admin_group_mgmt_create_name(message: types.Message, state: FSMContext
 
 @router.callback_query(F.data.startswith(CallbackData.ADMIN_GROUP_MGMT_OPEN_PREFIX))
 async def admin_group_mgmt_open(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     group_name = callback.data.replace(CallbackData.ADMIN_GROUP_MGMT_OPEN_PREFIX, "")
@@ -1279,7 +1443,7 @@ async def admin_group_mgmt_open(callback: types.CallbackQuery, state: FSMContext
 
 @router.callback_query(F.data == CallbackData.ADMIN_GROUP_MGMT_RENAME)
 async def admin_group_mgmt_rename(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     await state.set_state(AdminPanel.waiting_for_group_rename)
@@ -1289,7 +1453,7 @@ async def admin_group_mgmt_rename(callback: types.CallbackQuery, state: FSMConte
 
 @router.message(AdminPanel.waiting_for_group_rename)
 async def admin_group_mgmt_rename_name(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
+    if not await is_admin(message.from_user.id):
         await message.answer("Нет доступа.")
         await state.set_state(None)
         return
@@ -1299,7 +1463,7 @@ async def admin_group_mgmt_rename_name(message: types.Message, state: FSMContext
         return
     state_data = await state.get_data()
     ctx = _get_group_mgmt_context(state_data)
-    ok = update_group_name(
+    ok = await update_group_name(
         track=ctx.get("track", "uni"),
         faculty=ctx.get("faculty", ""),
         specialty=ctx.get("specialty", ""),
@@ -1316,7 +1480,7 @@ async def admin_group_mgmt_rename_name(message: types.Message, state: FSMContext
 
 @router.callback_query(F.data.startswith(CallbackData.ADMIN_GROUP_MGMT_ACTION_PREFIX))
 async def admin_group_mgmt_action(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     action = callback.data.replace(CallbackData.ADMIN_GROUP_MGMT_ACTION_PREFIX, "")
@@ -1325,7 +1489,7 @@ async def admin_group_mgmt_action(callback: types.CallbackQuery, state: FSMConte
         return
     state_data = await state.get_data()
     ctx = _get_group_mgmt_context(state_data)
-    ok = delete_group(
+    ok = await delete_group(
         track=ctx.get("track", "uni"),
         faculty=ctx.get("faculty", ""),
         specialty=ctx.get("specialty", ""),
@@ -1341,7 +1505,7 @@ async def admin_group_mgmt_action(callback: types.CallbackQuery, state: FSMConte
 
 @router.message(AdminPanel.waiting_for_group_payload)
 async def admin_panel_create_group_payload(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
+    if not await is_admin(message.from_user.id):
         await message.answer("Нет доступа.")
         await state.set_state(None)
         return
@@ -1351,7 +1515,7 @@ async def admin_panel_create_group_payload(message: types.Message, state: FSMCon
         await message.answer("Некорректный формат. Ожидается: <uni|college>|<кафедра>|<спец>|<курс>|<группа>")
         return
     track, faculty, specialty, course, group_name = parts
-    ok = add_group(
+    ok = await add_group(
         track=track,
         faculty=faculty,
         specialty=specialty,
@@ -1368,7 +1532,7 @@ async def admin_panel_create_group_payload(message: types.Message, state: FSMCon
 
 @router.callback_query(F.data.startswith(CallbackData.ADMIN_USER_PREFIX))
 async def admin_open_user(callback: types.CallbackQuery):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     user_id_raw = callback.data.replace(CallbackData.ADMIN_USER_PREFIX, "")
@@ -1376,11 +1540,11 @@ async def admin_open_user(callback: types.CallbackQuery):
         await callback.answer("Некорректный ID", show_alert=True)
         return
     target_id = int(user_id_raw)
-    profile = get_user_permissions(target_id)
+    profile = await get_user_permissions(target_id)
     groups = ", ".join(profile["groups"]) if profile["groups"] else "-"
     specialties = ", ".join(profile["specialties"]) if profile["specialties"] else "-"
     faculties = ", ".join(profile.get("faculties", [])) if profile.get("faculties") else "-"
-    approved = get_approved_user(target_id) or {}
+    approved = await get_approved_user(target_id) or {}
     username = approved.get("tg_username")
     username_text = f"@{username}" if username else "-"
     text = (
@@ -1397,21 +1561,36 @@ async def admin_open_user(callback: types.CallbackQuery):
     )
     profile_view = dict(profile)
     profile_view["is_grant"] = bool(approved.get("is_grant"))
-    await callback.message.edit_text(text, reply_markup=ikb.get_admin_user_actions_kb(target_id, profile_view))
+    from services.access_control import is_primary_admin
+
+    show_admin_toggle = is_primary_admin(callback.from_user.id) and not is_primary_admin(target_id)
+    await callback.message.edit_text(
+        text,
+        reply_markup=ikb.get_admin_user_actions_kb(target_id, profile_view, show_admin_toggle=show_admin_toggle),
+    )
     await callback.answer()
 
 
 @router.callback_query(F.data == "admin_back_list")
 async def admin_back_list(callback: types.CallbackQuery):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
-    await callback.message.edit_text("⚙️ Выберите пользователя для изменения прав:", reply_markup=ikb.get_admin_users_kb(_admin_candidates()))
+    items = await _admin_candidates()
+    approved_cache, permissions_cache = await _admin_users_kb_caches(items)
+    await callback.message.edit_text(
+        "⚙️ Выберите пользователя для изменения прав:",
+        reply_markup=ikb.get_admin_users_kb(
+            items,
+            approved_cache=approved_cache,
+            permissions_cache=permissions_cache,
+        ),
+    )
     await callback.answer()
 
 
 async def _toggle_permission(callback: types.CallbackQuery, prefix: str, field: str):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     user_id_raw = callback.data.replace(prefix, "")
@@ -1419,7 +1598,7 @@ async def _toggle_permission(callback: types.CallbackQuery, prefix: str, field: 
         await callback.answer("Некорректный ID", show_alert=True)
         return
     target_id = int(user_id_raw)
-    current = get_user_permissions(target_id)
+    current = await get_user_permissions(target_id)
     kwargs = {
         "can_notify": current["can_notify"],
         "can_review": current["can_review"],
@@ -1433,13 +1612,30 @@ async def _toggle_permission(callback: types.CallbackQuery, prefix: str, field: 
     elif field == "can_broadcast":
         kwargs["can_broadcast"] = not current["can_broadcast"]
     elif field == "is_admin":
+        from services.access_control import is_primary_admin
+
+        if not is_primary_admin(callback.from_user.id):
+            await callback.answer("Только главный админ может назначать админов.", show_alert=True)
+            return
+        if is_primary_admin(target_id):
+            await callback.answer("Нельзя снять права главного администратора.", show_alert=True)
+            return
         kwargs["is_admin_flag"] = not current["is_admin"]
-    set_user_permissions(callback.from_user.id, target_id, **kwargs)
-    profile = get_user_permissions(target_id)
-    approved = get_approved_user(target_id) or {}
+    try:
+        await set_user_permissions(callback.from_user.id, target_id, **kwargs)
+    except PermissionError as err:
+        await callback.answer(str(err), show_alert=True)
+        return
+    profile = await get_user_permissions(target_id)
+    approved = await get_approved_user(target_id) or {}
     profile_view = dict(profile)
     profile_view["is_grant"] = bool(approved.get("is_grant"))
-    await callback.message.edit_reply_markup(reply_markup=ikb.get_admin_user_actions_kb(target_id, profile_view))
+    from services.access_control import is_primary_admin
+
+    show_admin_toggle = is_primary_admin(callback.from_user.id) and not is_primary_admin(target_id)
+    await callback.message.edit_reply_markup(
+        reply_markup=ikb.get_admin_user_actions_kb(target_id, profile_view, show_admin_toggle=show_admin_toggle)
+    )
     await callback.answer("Права обновлены.")
 
 
@@ -1470,7 +1666,7 @@ async def admin_toggle_grant(callback: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith(CallbackData.ADMIN_ASSIGN_SPECS_PREFIX))
 async def admin_assign_specialties(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     user_id_raw = callback.data.replace(CallbackData.ADMIN_ASSIGN_SPECS_PREFIX, "")
@@ -1501,7 +1697,7 @@ async def admin_assign_specialties(callback: types.CallbackQuery, state: FSMCont
 
 @router.callback_query(F.data.startswith(CallbackData.ADMIN_ASSIGN_GROUPS_PREFIX))
 async def admin_assign_groups(callback: types.CallbackQuery):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     user_id_raw = callback.data.replace(CallbackData.ADMIN_ASSIGN_GROUPS_PREFIX, "")
@@ -1532,7 +1728,7 @@ async def admin_assign_groups(callback: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith(CallbackData.ADMIN_GROUPS_TRACK_PREFIX))
 async def admin_groups_track(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     payload = callback.data.replace(CallbackData.ADMIN_GROUPS_TRACK_PREFIX, "")
@@ -1542,9 +1738,9 @@ async def admin_groups_track(callback: types.CallbackQuery, state: FSMContext):
         return
     target_id = int(user_id_raw)
     track = "college" if track_raw == "college" else "uni"
-    current = get_user_permissions(target_id)
+    current = await get_user_permissions(target_id)
     allowed_specialties = list(current.get("specialties", []))
-    all_groups = list_groups_for_specialties(track=track, specialties=allowed_specialties)
+    all_groups = await list_groups_for_specialties(track=track, specialties=allowed_specialties)
     if not all_groups:
         await callback.answer("Сначала назначьте сотруднику доверенные специальности.", show_alert=True)
         return
@@ -1571,7 +1767,7 @@ async def admin_groups_track(callback: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith(CallbackData.ADMIN_GROUPS_PAGE_PREFIX))
 async def admin_groups_page(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     payload = callback.data.replace(CallbackData.ADMIN_GROUPS_PAGE_PREFIX, "")
@@ -1583,8 +1779,8 @@ async def admin_groups_page(callback: types.CallbackQuery, state: FSMContext):
     page = int(page_raw)
     state_data = await state.get_data()
     track = _selected_groups_track_for_user(state_data, target_id)
-    current = get_user_permissions(target_id)
-    all_groups = list_groups_for_specialties(track=track, specialties=list(current.get("specialties", [])))
+    current = await get_user_permissions(target_id)
+    all_groups = await list_groups_for_specialties(track=track, specialties=list(current.get("specialties", [])))
     selected_indexes = _selected_groups_for_user(state_data, target_id)
     page_items, safe_page, total_pages = _groups_page_payload(page, all_groups)
     await callback.message.edit_reply_markup(
@@ -1601,7 +1797,7 @@ async def admin_groups_page(callback: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith(CallbackData.ADMIN_GROUPS_TOGGLE_PREFIX))
 async def admin_groups_toggle(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     payload = callback.data.replace(CallbackData.ADMIN_GROUPS_TOGGLE_PREFIX, "")
@@ -1613,8 +1809,8 @@ async def admin_groups_toggle(callback: types.CallbackQuery, state: FSMContext):
     toggled_index = int(index_raw)
     state_data = await state.get_data()
     track = _selected_groups_track_for_user(state_data, target_id)
-    current = get_user_permissions(target_id)
-    all_groups = list_groups_for_specialties(track=track, specialties=list(current.get("specialties", [])))
+    current = await get_user_permissions(target_id)
+    all_groups = await list_groups_for_specialties(track=track, specialties=list(current.get("specialties", [])))
     if toggled_index < 0 or toggled_index >= len(all_groups):
         await callback.answer("Группа не найдена.", show_alert=True)
         return
@@ -1642,7 +1838,7 @@ async def admin_groups_toggle(callback: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith(CallbackData.ADMIN_GROUPS_APPLY_PREFIX))
 async def admin_groups_apply(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     user_id_raw = callback.data.replace(CallbackData.ADMIN_GROUPS_APPLY_PREFIX, "")
@@ -1652,17 +1848,17 @@ async def admin_groups_apply(callback: types.CallbackQuery, state: FSMContext):
     target_id = int(user_id_raw)
     state_data = await state.get_data()
     track = _selected_groups_track_for_user(state_data, target_id)
-    current = get_user_permissions(target_id)
-    all_groups = list_groups_for_specialties(track=track, specialties=list(current.get("specialties", [])))
+    current = await get_user_permissions(target_id)
+    all_groups = await list_groups_for_specialties(track=track, specialties=list(current.get("specialties", [])))
     selected_indexes = sorted(_selected_groups_for_user(state_data, target_id))
     selected_groups = [all_groups[idx] for idx in selected_indexes if 0 <= idx < len(all_groups)]
-    set_user_permissions(callback.from_user.id, target_id, groups=selected_groups, can_notify=True, can_review=True)
+    await set_user_permissions(callback.from_user.id, target_id, groups=selected_groups, can_notify=True, can_review=True)
     await callback.message.edit_text(
         f"✅ Группы назначены ({'Колледж' if track == 'college' else 'Университет'}):\n"
         f"{', '.join(selected_groups) if selected_groups else '-'}",
         reply_markup=ikb.get_admin_user_actions_kb(
             target_id,
-            {**get_user_permissions(target_id), "is_grant": bool((get_approved_user(target_id) or {}).get("is_grant"))},
+            {**await get_user_permissions(target_id), "is_grant": bool((await get_approved_user(target_id) or {}).get("is_grant"))},
         ),
     )
     await callback.answer("Сохранено.")
@@ -1670,7 +1866,7 @@ async def admin_groups_apply(callback: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith(CallbackData.ADMIN_GROUPS_RESET_PREFIX))
 async def admin_groups_reset(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     user_id_raw = callback.data.replace(CallbackData.ADMIN_GROUPS_RESET_PREFIX, "")
@@ -1685,7 +1881,7 @@ async def admin_groups_reset(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer("Выбор групп сброшен.")
 @router.callback_query(F.data.startswith(CallbackData.ADMIN_SPECS_TRACK_PREFIX))
 async def admin_specs_track(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     payload = callback.data.replace(CallbackData.ADMIN_SPECS_TRACK_PREFIX, "")
@@ -1696,7 +1892,7 @@ async def admin_specs_track(callback: types.CallbackQuery, state: FSMContext):
     target_id = int(user_id_raw)
     track = "college" if track_raw == "college" else "uni"
     all_specialties = get_all_specialties("ru", track=track)
-    current = get_user_permissions(target_id)
+    current = await get_user_permissions(target_id)
     selected_indexes = {idx for idx, value in enumerate(all_specialties) if value in set(current.get("specialties", []))}
     state_data = await state.get_data()
     selected_map = _get_admin_selected_map(state_data)
@@ -1720,7 +1916,7 @@ async def admin_specs_track(callback: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith(CallbackData.ADMIN_SPECS_PAGE_PREFIX))
 async def admin_specs_page(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     payload = callback.data.replace(CallbackData.ADMIN_SPECS_PAGE_PREFIX, "")
@@ -1749,7 +1945,7 @@ async def admin_specs_page(callback: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith(CallbackData.ADMIN_SPECS_TOGGLE_PREFIX))
 async def admin_specs_toggle(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     payload = callback.data.replace(CallbackData.ADMIN_SPECS_TOGGLE_PREFIX, "")
@@ -1789,7 +1985,7 @@ async def admin_specs_toggle(callback: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith(CallbackData.ADMIN_SPECS_CONFIRM_PREFIX))
 async def admin_specs_confirm(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     user_id_raw = callback.data.replace(CallbackData.ADMIN_SPECS_CONFIRM_PREFIX, "")
@@ -1802,7 +1998,7 @@ async def admin_specs_confirm(callback: types.CallbackQuery, state: FSMContext):
     all_specialties = get_all_specialties("ru", track=track)
     selected_indexes = sorted(_selected_for_user(state_data, target_id))
     selected_specialties = [all_specialties[idx] for idx in selected_indexes if 0 <= idx < len(all_specialties)]
-    approved = get_approved_user(target_id) or {}
+    approved = await get_approved_user(target_id) or {}
     info_lines = [
         "Подтвердите назначение ответственного:",
         f"👤 Пользователь: {approved.get('fio', '-')}",
@@ -1818,7 +2014,7 @@ async def admin_specs_confirm(callback: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith(CallbackData.ADMIN_SPECS_APPLY_PREFIX))
 async def admin_specs_apply(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     user_id_raw = callback.data.replace(CallbackData.ADMIN_SPECS_APPLY_PREFIX, "")
@@ -1831,14 +2027,14 @@ async def admin_specs_apply(callback: types.CallbackQuery, state: FSMContext):
     all_specialties = get_all_specialties("ru", track=track)
     selected_indexes = sorted(_selected_for_user(state_data, target_id))
     selected_specialties = [all_specialties[idx] for idx in selected_indexes if 0 <= idx < len(all_specialties)]
-    set_user_permissions(
+    await set_user_permissions(
         callback.from_user.id,
         target_id,
         can_notify=True,
         can_review=True,
         specialties=selected_specialties,
     )
-    approved = get_approved_user(target_id) or {}
+    approved = await get_approved_user(target_id) or {}
     info_lines = [
         "✅ Назначение подтверждено.",
         f"👤 Пользователь: {approved.get('fio', '-')}",
@@ -1852,7 +2048,7 @@ async def admin_specs_apply(callback: types.CallbackQuery, state: FSMContext):
         "\n".join(info_lines),
         reply_markup=ikb.get_admin_user_actions_kb(
             target_id,
-            {**get_user_permissions(target_id), "is_grant": bool((get_approved_user(target_id) or {}).get("is_grant"))},
+            {**await get_user_permissions(target_id), "is_grant": bool((await get_approved_user(target_id) or {}).get("is_grant"))},
         ),
     )
     await callback.answer()
@@ -1860,7 +2056,7 @@ async def admin_specs_apply(callback: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith(CallbackData.ADMIN_SPECS_RESET_PREFIX))
 async def admin_specs_reset(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     user_id_raw = callback.data.replace(CallbackData.ADMIN_SPECS_RESET_PREFIX, "")
@@ -1877,14 +2073,14 @@ async def admin_specs_reset(callback: types.CallbackQuery, state: FSMContext):
         "Выбор специальностей сброшен. Вы можете начать заново.",
         reply_markup=ikb.get_admin_user_actions_kb(
             target_id,
-            {**get_user_permissions(target_id), "is_grant": bool((get_approved_user(target_id) or {}).get("is_grant"))},
+            {**await get_user_permissions(target_id), "is_grant": bool((await get_approved_user(target_id) or {}).get("is_grant"))},
         ),
     )
 
 
 @router.message(Command("set_groups"))
 async def admin_set_groups(message: types.Message):
-    if not is_admin(message.from_user.id):
+    if not await is_admin(message.from_user.id):
         await message.answer("Нет доступа.")
         return
     parts = (message.text or "").split(maxsplit=2)
@@ -1896,13 +2092,13 @@ async def admin_set_groups(message: types.Message):
     if not groups:
         await message.answer("Нужно указать хотя бы одну группу или *")
         return
-    set_user_permissions(message.from_user.id, target_id, groups=groups)
+    await set_user_permissions(message.from_user.id, target_id, groups=groups)
     await message.answer(f"✅ Группы для {target_id} обновлены: {', '.join(groups)}")
 
 
 @router.message(Command("set_faculties"))
 async def admin_set_faculties(message: types.Message):
-    if not is_admin(message.from_user.id):
+    if not await is_admin(message.from_user.id):
         await message.answer("Нет доступа.")
         return
     parts = (message.text or "").split(maxsplit=2)
@@ -1920,13 +2116,13 @@ async def admin_set_faculties(message: types.Message):
         if unknown:
             await message.answer(f"Неизвестные кафедры: {', '.join(unknown)}")
             return
-    set_user_permissions(message.from_user.id, target_id, faculties=faculties)
+    await set_user_permissions(message.from_user.id, target_id, faculties=faculties)
     await message.answer(f"✅ Кафедры для {target_id} обновлены: {', '.join(faculties)}")
 
 
 @router.message(Command("create_group"))
 async def admin_create_group(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
+    if not await is_admin(message.from_user.id):
         await message.answer("Нет доступа.")
         return
     payload = (message.text or "").replace("/create_group", "", 1).strip()
@@ -1939,7 +2135,7 @@ async def admin_create_group(message: types.Message, state: FSMContext):
     if track not in {"uni", "college"}:
         await message.answer("Track должен быть uni или college.")
         return
-    ok = add_group(
+    ok = await add_group(
         track=track,
         faculty=faculty,
         specialty=specialty,

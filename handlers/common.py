@@ -48,8 +48,8 @@ from utils.main_menu_reply import sync_main_menu_reply_keyboard
 from utils.validators import MIN_HELP_TEXT_LEN, MIN_RATING_COMMENT_LEN, validate_min_plaintext
 
 router = Router()
-def _can_manage_support(from_user_id: int) -> bool:
-    return bool(is_admin(from_user_id) or is_responsible_user(from_user_id))
+async def _can_manage_support(from_user_id: int) -> bool:
+    return bool(await is_admin(from_user_id) or await is_responsible_user(from_user_id))
 
 
 def _staff_label(staff_id: int, profile: dict[str, str]) -> str:
@@ -125,8 +125,8 @@ async def _render_assign_kb(
     )
 
 
-def _is_psy_admin(user_id: int) -> bool:
-    return bool(is_admin(user_id) or (settings.psycholog_admin_id is not None and int(user_id) == int(settings.psycholog_admin_id)))
+async def _is_psy_admin(user_id: int) -> bool:
+    return bool(await is_admin(user_id) or (settings.psycholog_admin_id is not None and int(user_id) == int(settings.psycholog_admin_id)))
 
 
 def _configured_support_chat_ids() -> set[int]:
@@ -181,7 +181,7 @@ def _normalize_ticket_id(raw: str) -> str:
     return value
 
 
-def _resolve_existing_ticket_id(raw: str) -> str:
+async def _resolve_existing_ticket_id(raw: str) -> str:
     """Надежно резолвит ticket_id для разных форматов (legacy + prefixed)."""
     candidates: list[str] = []
     source = str(raw or "").strip()
@@ -197,7 +197,7 @@ def _resolve_existing_ticket_id(raw: str) -> str:
         if hash_prefixed not in candidates:
             candidates.append(hash_prefixed)
     for candidate in candidates:
-        found = get_ticket(candidate)
+        found = await get_ticket(candidate)
         if found:
             # Всегда возвращаем канонический ID из стора (обычно чистые цифры),
             # чтобы не размножать форматы вроде apply_10014 / ticket_10014.
@@ -273,10 +273,13 @@ async def uni_menu(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(current_choice="Университет", admission_track="uni")
 
     text = MESSAGES[lang]["main_menu"]
-    approved_profile = get_approved_user(callback.from_user.id)
-    reviewer = is_responsible_user(callback.from_user.id)
-    admin = is_admin(callback.from_user.id)
-    await callback.message.edit_text(
+    approved_profile = await get_approved_user(callback.from_user.id)
+    reviewer = await is_responsible_user(callback.from_user.id)
+    admin = await is_admin(callback.from_user.id)
+    from utils.safe_telegram import edit_or_send_text
+
+    await edit_or_send_text(
+        callback.message,
         text,
         reply_markup=ikb.get_uni_menu(
             lang,
@@ -293,7 +296,7 @@ async def uni_menu(callback: types.CallbackQuery, state: FSMContext):
             is_registered=approved_profile is not None,
             is_reviewer=reviewer,
             is_admin=admin,
-            is_psy_admin=_is_psy_admin(callback.from_user.id),
+            is_psy_admin=await _is_psy_admin(callback.from_user.id),
         ),
         state=state,
     )
@@ -308,9 +311,9 @@ async def main_menu_text(message: types.Message, state: FSMContext):
     await reset_user_wizard_for_main_menu(state)
     data = await state.get_data()
     lang = data.get("locale", "ru")
-    approved_profile = get_approved_user(message.from_user.id)
-    reviewer = is_responsible_user(message.from_user.id)
-    admin = is_admin(message.from_user.id)
+    approved_profile = await get_approved_user(message.from_user.id)
+    reviewer = await is_responsible_user(message.from_user.id)
+    admin = await is_admin(message.from_user.id)
     await message.answer(
         MESSAGES[lang]["college_menu"] if is_college else MESSAGES[lang]["main_menu"],
         reply_markup=ikb.get_college_menu(lang) if is_college else ikb.get_uni_menu(lang),
@@ -324,7 +327,7 @@ async def main_menu_text(message: types.Message, state: FSMContext):
             is_registered=approved_profile is not None,
             is_reviewer=reviewer,
             is_admin=admin,
-            is_psy_admin=_is_psy_admin(message.from_user.id),
+            is_psy_admin=await _is_psy_admin(message.from_user.id),
         ),
         state=state,
     )
@@ -386,7 +389,7 @@ async def help_option(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer("Неизвестный раздел.", show_alert=True)
         return
     if code == "psy":
-        ticket = open_or_get_ticket(callback.from_user.id, "psy", anonymous=True)
+        ticket = await open_or_get_ticket(callback.from_user.id, "psy", anonymous=True)
         await state.update_data(psy_ticket_id=ticket["ticket_id"], support_ticket_id=ticket["ticket_id"], help_topic_code="psy")
         await state.set_state(HelpRequest.waiting_for_text)
         await callback.message.answer(
@@ -405,22 +408,17 @@ async def help_option(callback: types.CallbackQuery, state: FSMContext):
         return
     if code == "uni":
         if is_college:
+            from core.config import settings
+
             await callback.message.answer(
                 tr(
                     lang,
-                    "🏫 Вопросы по колледжу:\n"
-                    "Тел.: +7 (7242) 24-84-25, +7 (7242) 24-60-47\n"
-                    "Instagram: @kzo_college\n"
-                    "Telegram: @kzo_college_bot\n"
-                    "Сайт: kvmk.kz",
-                    "🏫 Колледж бойынша сұрақтар:\n"
-                    "Тел.: +7 (7242) 24-84-25, +7 (7242) 24-60-47\n"
-                    "Instagram: @kzo_college\n"
-                    "Telegram: @kzo_college_bot\n"
-                    "Сайт: kvmk.kz",
+                    "🏫 Вопрос колледжу — напишите в WhatsApp приёмной:",
+                    "🏫 Колледжге сұрақ — WhatsApp арқылы жазыңыз:",
                 ),
+                reply_markup=ikb.get_college_whatsapp_kb(lang, back_callback=_help_back_callback(data)),
             )
-            await callback.answer(tr(lang, "Контакты колледжа отправлены.", "Колледж байланыстары жіберілді."))
+            await callback.answer(tr(lang, "Откроется WhatsApp.", "WhatsApp ашылады."))
             return
         await callback.message.answer(
             tr(
@@ -458,12 +456,12 @@ async def help_collect_text(message: types.Message, state: FSMContext):
             await message.answer("Этот тип сообщения пока не поддерживается для тикетов.")
             return
         if not support_ticket_id:
-            ticket = open_or_get_ticket(message.from_user.id, support_topic or "psy", anonymous=(support_topic != "uni"))
+            ticket = await open_or_get_ticket(message.from_user.id, support_topic or "psy", anonymous=(support_topic != "uni"))
             support_ticket_id = str(ticket["ticket_id"])
-        existing_ticket = get_ticket(support_ticket_id)
+        existing_ticket = await get_ticket(support_ticket_id)
         effective_topic = str(existing_ticket.get("topic_code")) if existing_ticket else (support_topic or "psy")
         is_anon = bool(existing_ticket.get("anonymous")) if existing_ticket else (effective_topic != "uni")
-        blocked, blocked_until = is_actor_blocked(
+        blocked, blocked_until = await is_actor_blocked(
             message.from_user.id,
             effective_topic,
             anonymous=is_anon,
@@ -477,7 +475,7 @@ async def help_collect_text(message: types.Message, state: FSMContext):
             return
         ticket_id = support_ticket_id
         payload = build_message_payload(message)
-        ticket = append_user_payload(ticket_id, payload)
+        ticket = await append_user_payload(ticket_id, payload)
         if not ticket:
             await message.answer("Не удалось сохранить сообщение. Попробуйте снова.")
             return
@@ -507,7 +505,7 @@ async def help_collect_text(message: types.Message, state: FSMContext):
         if int(actual_chat_id) != int(target_chat_id):
             env_key = "PSYCHOLOG_CHAT_ID" if ticket.get("topic_code") == "psy" else "REVIEW_CHAT_ID"
             await message.answer(f"Чат поддержки был мигрирован Telegram. Обновите {env_key} в .env на {actual_chat_id}")
-        link_chat_message(ticket["ticket_id"], sent.message_id, actual_chat_id)
+        await link_chat_message(ticket["ticket_id"], sent.message_id, actual_chat_id)
         copied_id = await copy_with_reply(
             message.bot,
             to_chat_id=int(actual_chat_id),
@@ -516,7 +514,7 @@ async def help_collect_text(message: types.Message, state: FSMContext):
             reply_to_message_id=int(sent.message_id),
         )
         if copied_id is not None:
-            link_chat_message(ticket["ticket_id"], copied_id, actual_chat_id)
+            await link_chat_message(ticket["ticket_id"], copied_id, actual_chat_id)
         await message.answer(
             tr(
                 lang,
@@ -597,11 +595,11 @@ async def help_reset(callback: types.CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith(CallbackData.PSY_CLOSE_PREFIX))
 async def psy_close_ticket(callback: types.CallbackQuery, state: FSMContext):
     ticket_id = callback.data.replace(CallbackData.PSY_CLOSE_PREFIX, "")
-    ticket = get_ticket(ticket_id)
+    ticket = await get_ticket(ticket_id)
     if not ticket or int(ticket.get("user_id", 0)) != int(callback.from_user.id):
         await callback.answer("Тикет не найден.", show_alert=True)
         return
-    closed = close_ticket(ticket_id, closed_by_user=True)
+    closed = await close_ticket(ticket_id, closed_by_user=True)
     await state.update_data(psy_ticket_id=None)
     await state.update_data(support_ticket_id=None)
     if closed:
@@ -632,11 +630,11 @@ async def psy_rate_ticket(callback: types.CallbackQuery, state: FSMContext):
     if rating < 1 or rating > 10:
         await callback.answer("Оценка должна быть от 1 до 10.", show_alert=True)
         return
-    ticket = get_ticket(ticket_id)
+    ticket = await get_ticket(ticket_id)
     if not ticket or int(ticket.get("user_id", 0)) != int(callback.from_user.id):
         await callback.answer("Тикет не найден.", show_alert=True)
         return
-    set_ticket_rating(ticket_id, rating)
+    await set_ticket_rating(ticket_id, rating)
     await state.update_data(rating_ticket_id=ticket_id, rating_value=rating)
     await state.set_state(HelpRequest.waiting_for_rating_comment)
     await callback.message.edit_text("Спасибо! Теперь напишите комментарий к оценке ")
@@ -648,7 +646,7 @@ async def psy_rating_comment(message: types.Message, state: FSMContext):
     data = await state.get_data()
     ticket_id = str(data.get("rating_ticket_id", ""))
     rating_value = int(data.get("rating_value", 0))
-    ticket = get_ticket(ticket_id)
+    ticket = await get_ticket(ticket_id)
     if not ticket or int(ticket.get("user_id", 0)) != int(message.from_user.id):
         await message.answer("Тикет не найден.")
         await state.clear()
@@ -657,7 +655,7 @@ async def psy_rating_comment(message: types.Message, state: FSMContext):
     if not validate_min_plaintext(comment, min_len=MIN_RATING_COMMENT_LEN):
         await message.answer("Напишите комментарий чуть подробнее (минимум 3 символа).")
         return
-    set_ticket_rating_comment(ticket_id, comment)
+    await set_ticket_rating_comment(ticket_id, comment)
     target_chat_id = _support_target_chat(str(ticket.get("topic_code", "")))
     if target_chat_id:
         feedback_text = (
@@ -673,7 +671,7 @@ async def psy_rating_comment(message: types.Message, state: FSMContext):
 @router.callback_query(F.data.startswith(CallbackData.PSY_VIEW_TICKET_PREFIX))
 async def psy_view_ticket(callback: types.CallbackQuery):
     ticket_id = callback.data.replace(CallbackData.PSY_VIEW_TICKET_PREFIX, "")
-    ticket = get_ticket(ticket_id)
+    ticket = await get_ticket(ticket_id)
     if not ticket:
         await callback.answer("Тикет не найден.", show_alert=True)
         return
@@ -694,7 +692,7 @@ async def psy_view_ticket(callback: types.CallbackQuery):
 @router.callback_query(F.data.startswith(CallbackData.PSY_VIEW_ALIAS_PREFIX))
 async def psy_view_alias(callback: types.CallbackQuery):
     alias = callback.data.replace(CallbackData.PSY_VIEW_ALIAS_PREFIX, "")
-    rows = tickets_by_alias(alias)
+    rows = await tickets_by_alias(alias)
     if not rows:
         await callback.answer("Обращений не найдено.", show_alert=True)
         return
@@ -713,12 +711,12 @@ async def psy_view_alias(callback: types.CallbackQuery):
     and not str(callback.data).startswith(CallbackData.SUPPORT_BLOCK_CONFIRM_PREFIX)
 )
 async def support_block_prompt(callback: types.CallbackQuery):
-    if not _can_manage_support(callback.from_user.id):
+    if not await _can_manage_support(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     payload = callback.data.replace(CallbackData.SUPPORT_BLOCK_PREFIX, "")
     ticket_id, _, mode = payload.partition("_")
-    ticket = get_ticket(ticket_id) or get_ticket(_ticket_id_from_text(str(getattr(callback.message, "text", "") or "")))
+    ticket = await get_ticket(ticket_id) or await get_ticket(_ticket_id_from_text(str(getattr(callback.message, "text", "") or "")))
     if not ticket or ticket.get("topic_code") != "psy":
         await callback.answer("Блокировка доступна только для психологических тикетов.", show_alert=True)
         return
@@ -738,7 +736,7 @@ async def support_block_prompt(callback: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith(CallbackData.SUPPORT_BLOCK_CONFIRM_PREFIX))
 async def support_block_confirm(callback: types.CallbackQuery):
-    if not _can_manage_support(callback.from_user.id):
+    if not await _can_manage_support(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     payload = callback.data.replace(CallbackData.SUPPORT_BLOCK_CONFIRM_PREFIX, "")
@@ -747,7 +745,7 @@ async def support_block_confirm(callback: types.CallbackQuery):
         await callback.answer("Отменено.")
         return
     ticket_id, _, mode = rest.partition("_")
-    ticket = block_actor_by_ticket(ticket_id, mode, callback.from_user.id)
+    ticket = await block_actor_by_ticket(ticket_id, mode, callback.from_user.id)
     if not ticket:
         await callback.answer("Тикет не найден.", show_alert=True)
         return
@@ -764,11 +762,11 @@ async def support_block_confirm(callback: types.CallbackQuery):
     and not str(callback.data).startswith(CallbackData.SUPPORT_UNBLOCK_CONFIRM_PREFIX)
 )
 async def support_unblock_prompt(callback: types.CallbackQuery):
-    if not _can_manage_support(callback.from_user.id):
+    if not await _can_manage_support(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     ticket_id = callback.data.replace(CallbackData.SUPPORT_UNBLOCK_PREFIX, "")
-    ticket = get_ticket(ticket_id)
+    ticket = await get_ticket(ticket_id)
     if not ticket or ticket.get("topic_code") != "psy":
         await callback.answer("Разблокировка доступна только для психологических тикетов.", show_alert=True)
         return
@@ -787,7 +785,7 @@ async def support_unblock_prompt(callback: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith(CallbackData.SUPPORT_UNBLOCK_CONFIRM_PREFIX))
 async def support_unblock_confirm(callback: types.CallbackQuery):
-    if not _can_manage_support(callback.from_user.id):
+    if not await _can_manage_support(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     payload = callback.data.replace(CallbackData.SUPPORT_UNBLOCK_CONFIRM_PREFIX, "")
@@ -795,7 +793,7 @@ async def support_unblock_confirm(callback: types.CallbackQuery):
     if decision != "yes":
         await callback.answer("Отменено.")
         return
-    ticket = unblock_actor_by_ticket(ticket_id, callback.from_user.id)
+    ticket = await unblock_actor_by_ticket(ticket_id, callback.from_user.id)
     if not ticket:
         await callback.answer("Тикет не найден.", show_alert=True)
         return
@@ -812,11 +810,11 @@ async def support_unblock_confirm(callback: types.CallbackQuery):
     and not str(callback.data).startswith(CallbackData.SUPPORT_DELETE_CONFIRM_PREFIX)
 )
 async def support_delete_prompt(callback: types.CallbackQuery):
-    if not _can_manage_support(callback.from_user.id):
+    if not await _can_manage_support(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     ticket_id = callback.data.replace(CallbackData.SUPPORT_DELETE_PREFIX, "")
-    ticket = get_ticket(ticket_id) or get_ticket(_ticket_id_from_text(str(getattr(callback.message, "text", "") or "")))
+    ticket = await get_ticket(ticket_id) or await get_ticket(_ticket_id_from_text(str(getattr(callback.message, "text", "") or "")))
     if not ticket:
         await callback.answer("Тикет не найден.", show_alert=True)
         return
@@ -835,7 +833,7 @@ async def support_delete_prompt(callback: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith(CallbackData.SUPPORT_DELETE_CONFIRM_PREFIX))
 async def support_delete_confirm(callback: types.CallbackQuery):
-    if not _can_manage_support(callback.from_user.id):
+    if not await _can_manage_support(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     payload = callback.data.replace(CallbackData.SUPPORT_DELETE_CONFIRM_PREFIX, "")
@@ -843,9 +841,9 @@ async def support_delete_confirm(callback: types.CallbackQuery):
     if decision != "yes":
         await callback.answer("Отменено.")
         return
-    resolved = get_ticket(ticket_id) or get_ticket(_ticket_id_from_text(str(getattr(callback.message, "text", "") or "")))
+    resolved = await get_ticket(ticket_id) or await get_ticket(_ticket_id_from_text(str(getattr(callback.message, "text", "") or "")))
     ticket_id = str(resolved.get("ticket_id")) if resolved else ticket_id
-    refs = ticket_message_refs(ticket_id)
+    refs = await ticket_message_refs(ticket_id)
     deleted = 0
     for row in refs:
         try:
@@ -868,7 +866,7 @@ async def psy_staff_reply(message: types.Message):
     reply_to = message.reply_to_message
     if not reply_to:
         return
-    ticket = get_ticket_by_chat_message(message.chat.id, reply_to.message_id)
+    ticket = await get_ticket_by_chat_message(message.chat.id, reply_to.message_id)
     if not ticket:
         return
     target_chat_id = _support_target_chat(str(ticket.get("topic_code", "")))
@@ -890,7 +888,7 @@ async def psy_staff_reply(message: types.Message):
         await message.answer("Этот тип ответа пока не поддерживается.")
         return
     payload = build_message_payload(message)
-    updated = append_staff_payload(
+    updated = await append_staff_payload(
         ticket["ticket_id"],
         message.from_user.id,
         payload,
@@ -899,7 +897,7 @@ async def psy_staff_reply(message: types.Message):
     )
     if not updated:
         return
-    register_staff_profile(
+    await register_staff_profile(
         message.from_user.id,
         username=message.from_user.username,
         full_name=message.from_user.full_name,
@@ -910,11 +908,11 @@ async def psy_staff_reply(message: types.Message):
         user_id,
         "💬 Вам ответили из службы поддержки.",
     )
-    link_chat_message(updated["ticket_id"], message.message_id, message.chat.id)
-    link_chat_message(updated["ticket_id"], header.message_id, user_id)
+    await link_chat_message(updated["ticket_id"], message.message_id, message.chat.id)
+    await link_chat_message(updated["ticket_id"], header.message_id, user_id)
     if message.text:
         sent = await message.bot.send_message(user_id, message.text, reply_to_message_id=header.message_id)
-        link_chat_message(updated["ticket_id"], sent.message_id, user_id)
+        await link_chat_message(updated["ticket_id"], sent.message_id, user_id)
     else:
         copied_id = await copy_with_reply(
             message.bot,
@@ -924,7 +922,7 @@ async def psy_staff_reply(message: types.Message):
             reply_to_message_id=int(header.message_id),
         )
         if copied_id is not None:
-            link_chat_message(updated["ticket_id"], copied_id, user_id)
+            await link_chat_message(updated["ticket_id"], copied_id, user_id)
         else:
             await message.bot.send_message(user_id, "Получен ответ службы поддержки.")
     await message.answer("Ответ доставлен пользователю.")
@@ -939,7 +937,7 @@ async def psy_staff_reply(message: types.Message):
 async def sync_psycholog_chat_member(message: types.Message):
     if not message.from_user or message.from_user.is_bot:
         return
-    register_staff_profile(
+    await register_staff_profile(
         message.from_user.id,
         username=message.from_user.username,
         full_name=message.from_user.full_name,
@@ -957,8 +955,8 @@ async def psy_kb(message: types.Message):
     )
 
 
-def _format_psy_stats(period: str) -> str:
-    rows = build_staff_performance(period)
+async def _format_psy_stats(period: str) -> str:
+    rows = await build_staff_performance(period)
     if not rows:
         return "Статистика не найдена за выбранный период."
     period_label = {
@@ -991,17 +989,17 @@ async def psy_stats(message: types.Message):
     if settings.psycholog_chat_id is None or int(message.chat.id) != int(settings.psycholog_chat_id):
         await message.answer("Эта команда доступна только в чате психологов.")
         return
-    await message.answer(_format_psy_stats("all"), reply_markup=ikb.get_psy_stats_period_kb())
+    await message.answer(await _format_psy_stats("all"), reply_markup=ikb.get_psy_stats_period_kb())
 
 
 @router.message(Command("psy_unblock"))
 async def psy_unblock(message: types.Message):
     if settings.psycholog_chat_id is None or int(message.chat.id) != int(settings.psycholog_chat_id):
         return
-    if not _is_psy_admin(message.from_user.id):
+    if not await _is_psy_admin(message.from_user.id):
         await message.answer("Нет доступа.")
         return
-    rows = list_blocked_actors()
+    rows = await list_blocked_actors()
     if not rows:
         await message.answer("Список блокировок пуст.")
         return
@@ -1035,7 +1033,7 @@ async def psy_unblock_cb(callback: types.CallbackQuery):
     if settings.psycholog_chat_id is None or int(callback.message.chat.id) != int(settings.psycholog_chat_id):
         await callback.answer("Доступно только в чате психологов.", show_alert=True)
         return
-    if not _is_psy_admin(callback.from_user.id):
+    if not await _is_psy_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     payload = str(callback.data).replace(CallbackData.PSY_UNBLOCK_PREFIX, "", 1)
@@ -1046,7 +1044,7 @@ async def psy_unblock_cb(callback: types.CallbackQuery):
         actor_key = f"user:{payload.replace('user_', '', 1)}"
     else:
         actor_key = payload.replace("_", ":")
-    ok = unblock_actor_by_key(actor_key, callback.from_user.id)
+    ok = await unblock_actor_by_key(actor_key, callback.from_user.id)
     await callback.answer("Разблокировано." if ok else "Уже разблокирован.", show_alert=True)
 
 @router.callback_query(F.data.startswith(CallbackData.PSY_STATS_PREFIX))
@@ -1055,7 +1053,7 @@ async def psy_stats_period(callback: types.CallbackQuery):
         await callback.answer("Доступно только в чате психологов.", show_alert=True)
         return
     period = callback.data.replace(CallbackData.PSY_STATS_PREFIX, "")
-    await callback.message.edit_text(_format_psy_stats(period), reply_markup=ikb.get_psy_stats_period_kb())
+    await callback.message.edit_text(await _format_psy_stats(period), reply_markup=ikb.get_psy_stats_period_kb())
     await callback.answer()
 
 
@@ -1066,25 +1064,25 @@ async def psy_stats_period(callback: types.CallbackQuery):
     and not str(callback.data).startswith(CallbackData.SUPPORT_ASSIGN_APPLY_PREFIX)
 )
 async def support_assign_prompt(callback: types.CallbackQuery, state: FSMContext):
-    if not _is_psy_admin(callback.from_user.id):
+    if not await _is_psy_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     ticket_id_raw = callback.data.replace(CallbackData.SUPPORT_ASSIGN_PREFIX, "")
-    ticket_id = _resolve_existing_ticket_id(ticket_id_raw)
-    ticket = get_ticket(ticket_id) or get_ticket(_ticket_id_from_text(str(getattr(callback.message, "text", "") or "")))
+    ticket_id = await _resolve_existing_ticket_id(ticket_id_raw)
+    ticket = await get_ticket(ticket_id) or await get_ticket(_ticket_id_from_text(str(getattr(callback.message, "text", "") or "")))
     if not ticket:
         await callback.answer("Тикет не найден.", show_alert=True)
         return
-    staff_rows = list_staff_registry()
+    staff_rows = await list_staff_registry()
     if settings.psycholog_chat_id is not None:
         try:
             admins = await callback.bot.get_chat_administrators(int(settings.psycholog_chat_id))
             for admin_row in admins:
                 user = admin_row.user
-                register_staff_profile(user.id, username=user.username, full_name=user.full_name)
+                await register_staff_profile(user.id, username=user.username, full_name=user.full_name)
         except Exception:
             pass
-        staff_rows = list_staff_registry()
+        staff_rows = await list_staff_registry()
     if not staff_rows:
         await callback.answer("Нет доступных психологов в реестре.", show_alert=True)
         return
@@ -1122,7 +1120,7 @@ async def support_assign_prompt(callback: types.CallbackQuery, state: FSMContext
 
 @router.callback_query(F.data.startswith(CallbackData.SUPPORT_ASSIGN_PICK_PREFIX))
 async def support_assign_pick(callback: types.CallbackQuery, state: FSMContext):
-    if not _is_psy_admin(callback.from_user.id):
+    if not await _is_psy_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     payload = callback.data.replace(CallbackData.SUPPORT_ASSIGN_PICK_PREFIX, "")
@@ -1130,7 +1128,7 @@ async def support_assign_pick(callback: types.CallbackQuery, state: FSMContext):
     if not sep:
         await callback.answer("Некорректные данные назначения.", show_alert=True)
         return
-    ticket_id = _resolve_existing_ticket_id(ticket_id)
+    ticket_id = await _resolve_existing_ticket_id(ticket_id)
     if not staff_id_raw.isdigit():
         await callback.answer("Некорректный психолог.", show_alert=True)
         return
@@ -1157,7 +1155,7 @@ async def support_assign_pick(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(assign_ticket_id=str(ticket_id), assign_selected=sorted(selected))
 
     # Перерисовываем клавиатуру (список актуальных участников чата)
-    staff_rows = list_staff_registry()
+    staff_rows = await list_staff_registry()
     active_rows: list[tuple[int, dict[str, str]]] = []
     if settings.psycholog_chat_id is not None:
         for sid, profile in staff_rows[:50]:
@@ -1183,18 +1181,18 @@ async def support_assign_pick(callback: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith(CallbackData.SUPPORT_ASSIGN_APPLY_PREFIX))
 async def support_assign_apply(callback: types.CallbackQuery, state: FSMContext):
-    if not _is_psy_admin(callback.from_user.id):
+    if not await _is_psy_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     ticket_id_raw = callback.data.replace(CallbackData.SUPPORT_ASSIGN_APPLY_PREFIX, "")
-    ticket_id = _resolve_existing_ticket_id(ticket_id_raw)
+    ticket_id = await _resolve_existing_ticket_id(ticket_id_raw)
     data = await state.get_data()
     raw_sel = data.get("assign_selected") or []
     selected = sorted({int(x) for x in raw_sel if str(x).isdigit() or isinstance(x, int)})
     if not selected:
         await callback.answer("Выберите хотя бы одного психолога.", show_alert=True)
         return
-    updated = set_ticket_assignees(ticket_id, selected, callback.from_user.id)
+    updated = await set_ticket_assignees(ticket_id, selected, callback.from_user.id)
     if not updated:
         await callback.answer("Тикет не найден.", show_alert=True)
         return
@@ -1202,7 +1200,7 @@ async def support_assign_apply(callback: types.CallbackQuery, state: FSMContext)
     ui_message_id = int(data.get("assign_ui_message_id") or 0)
     header = f"Назначены психологи (тикет #{ticket_id}): " + ", ".join(str(x) for x in selected)
     if ui_message_id:
-        staff_rows = list_staff_registry()
+        staff_rows = await list_staff_registry()
         active_rows: list[tuple[int, dict[str, str]]] = []
         if settings.psycholog_chat_id is not None:
             for sid, profile in staff_rows[:50]:
@@ -1241,14 +1239,13 @@ async def coll_menu(callback: types.CallbackQuery, state: FSMContext):
 
     await state.update_data(current_choice="Колледж", admission_track="college")
 
+    from utils.safe_telegram import edit_or_send_text
+
     text = MESSAGES[lang]["college_menu"]
-    await callback.message.edit_text(
-        text,
-        reply_markup=ikb.get_college_menu(lang),
-    )
-    approved_profile = get_approved_user(callback.from_user.id)
-    reviewer = is_responsible_user(callback.from_user.id)
-    admin = is_admin(callback.from_user.id)
+    await edit_or_send_text(callback.message, text, reply_markup=ikb.get_college_menu(lang))
+    approved_profile = await get_approved_user(callback.from_user.id)
+    reviewer = await is_responsible_user(callback.from_user.id)
+    admin = await is_admin(callback.from_user.id)
     await sync_main_menu_reply_keyboard(
         callback.bot,
         chat_id=callback.message.chat.id,
@@ -1258,7 +1255,7 @@ async def coll_menu(callback: types.CallbackQuery, state: FSMContext):
             is_registered=approved_profile is not None,
             is_reviewer=reviewer,
             is_admin=admin,
-            is_psy_admin=_is_psy_admin(callback.from_user.id),
+            is_psy_admin=await _is_psy_admin(callback.from_user.id),
         ),
         state=state,
     )
@@ -1267,12 +1264,12 @@ async def coll_menu(callback: types.CallbackQuery, state: FSMContext):
 
 @router.message(Command("status"))
 async def cmd_status(message: types.Message):
-    await message.answer(build_applicant_status_text(message.from_user.id))
+    await message.answer(await build_applicant_status_text(message.from_user.id))
 
 
 @router.message(Command("my_data"))
 async def cmd_my_data(message: types.Message):
-    payload = build_user_data_export(message.from_user.id)
+    payload = await build_user_data_export(message.from_user.id)
     pretty = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
     buffer = BytesIO(pretty)
     buffer.name = f"user_data_{message.from_user.id}.json"
@@ -1281,7 +1278,7 @@ async def cmd_my_data(message: types.Message):
 
 @router.message(Command("delete_me"))
 async def cmd_delete_me(message: types.Message):
-    result = delete_user_data(message.from_user.id)
+    result = await delete_user_data(message.from_user.id)
     removed_any = any(result.values())
     if not removed_any:
         await message.answer("Данные не найдены.")
@@ -1291,7 +1288,7 @@ async def cmd_delete_me(message: types.Message):
 
 @router.message(Command("moderation_queue"))
 async def cmd_moderation_queue(message: types.Message):
-    if not is_responsible_user(message.from_user.id):
+    if not await is_responsible_user(message.from_user.id):
         await message.answer("Нет доступа.")
         return
-    await message.answer(build_moderation_queue_text())
+    await message.answer(await build_moderation_queue_text())

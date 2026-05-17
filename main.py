@@ -4,9 +4,12 @@ import logging
 
 from aiogram.exceptions import TelegramNetworkError
 
+from db.database import dispose_database, init_database
+from db.json_import import import_legacy_json_if_needed
 from loader import create_bot, create_dispatcher
 from core.config import settings
 from services.data_retention import cleanup_stale_pending_data
+from services.excel_sync import sync_all_excel_from_database
 from services.support_tickets import process_due_user_pings
 from utils.logger import setup_logger
 
@@ -14,7 +17,21 @@ from utils.logger import setup_logger
 async def main() -> None:
     setup_logger()
     logging.info("Бот запускается")
-    cleanup_result = cleanup_stale_pending_data(settings.registration_retention_days)
+    await init_database()
+    await import_legacy_json_if_needed()
+
+    if settings.excel_sync_on_startup:
+        try:
+            excel_stats = await sync_all_excel_from_database()
+            logging.info(
+                "Excel sync on startup: %s registrations, %s document packages",
+                excel_stats.get("approved_registrations"),
+                excel_stats.get("approved_packages"),
+            )
+        except Exception as err:
+            logging.error("Excel sync on startup failed: %s", err)
+
+    cleanup_result = await cleanup_stale_pending_data(settings.registration_retention_days)
     logging.info(
         "Retention cleanup: registrations=%s, packages=%s",
         cleanup_result["removed_pending_registrations"],
@@ -33,6 +50,7 @@ async def main() -> None:
         with contextlib.suppress(asyncio.CancelledError):
             await reminders_task
         await bot.session.close()
+        await dispose_database()
 
 
 async def _support_reminders_loop(bot) -> None:

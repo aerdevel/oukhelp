@@ -2,8 +2,6 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from core.callbacks import CallbackData
-from services.access_control import get_user_permissions
-from services.registration_store import get_approved_user
 
 
 def get_admin_approve_kb(tg_user_id: int) -> InlineKeyboardMarkup:
@@ -18,6 +16,7 @@ def get_admin_approve_kb(tg_user_id: int) -> InlineKeyboardMarkup:
 
 def get_admin_panel_kb() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🧰 Рабочее место", callback_data=CallbackData.CABINET_WORKPLACE))
     builder.row(InlineKeyboardButton(text="🛂 Центр модерации", callback_data=CallbackData.ADMIN_PANEL_REVIEW))
     builder.row(InlineKeyboardButton(text="⚙️ Управление доступами", callback_data=CallbackData.ADMIN_PANEL_ACCESS))
     builder.row(InlineKeyboardButton(text="🗂 Управление группами", callback_data=CallbackData.ADMIN_PANEL_GROUPS))
@@ -38,7 +37,14 @@ def _compact_label(item: dict) -> str:
     return f"{track} {status} {fio} | {group}"
 
 
-def get_review_list_kb(items: list[dict], page: int, total_pages: int, *, processed: bool = False) -> InlineKeyboardMarkup:
+def get_review_list_kb(
+    items: list[dict],
+    page: int,
+    total_pages: int,
+    *,
+    processed: bool = False,
+    back_callback: str = CallbackData.ADMIN_PANEL,
+) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for item in items:
         tg_user_id = item.get("tg_user_id", 0)
@@ -71,7 +77,7 @@ def get_review_list_kb(items: list[dict], page: int, total_pages: int, *, proces
         InlineKeyboardButton(text="⏳ Необработанные", callback_data=f"{CallbackData.REVIEW_TAB_PREFIX}0"),
         InlineKeyboardButton(text="✅ Обработанные", callback_data=f"{CallbackData.REVIEW_TAB_PREFIX}1"),
     )
-    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data=CallbackData.ADMIN_PANEL))
+    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data=back_callback))
     return builder.as_markup()
 
 
@@ -85,11 +91,18 @@ def get_review_actions_kb(tg_user_id: int) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def get_admin_users_kb(items: list[tuple[int, str]]) -> InlineKeyboardMarkup:
+def get_admin_users_kb(
+    items: list[tuple[int, str]],
+    *,
+    approved_cache: dict[int, dict] | None = None,
+    permissions_cache: dict[int, dict] | None = None,
+) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
+    approved_cache = approved_cache or {}
+    permissions_cache = permissions_cache or {}
     for user_id, display_name in items:
-        profile = get_user_permissions(user_id)
-        approved = get_approved_user(user_id) or {}
+        profile = permissions_cache.get(user_id, {})
+        approved = approved_cache.get(user_id, {})
         fio = approved.get("fio") or display_name or f"ID {user_id}"
         role = approved.get("role", "-")
         group = approved.get("group", "-")
@@ -113,7 +126,7 @@ def get_admin_users_kb(items: list[tuple[int, str]]) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def get_admin_user_actions_kb(user_id: int, profile: dict) -> InlineKeyboardMarkup:
+def get_admin_user_actions_kb(user_id: int, profile: dict, *, show_admin_toggle: bool = True) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     notify_mark = "✅" if profile.get("can_notify") else "❌"
     review_mark = "✅" if profile.get("can_review") else "❌"
@@ -122,7 +135,8 @@ def get_admin_user_actions_kb(user_id: int, profile: dict) -> InlineKeyboardMark
     builder.row(InlineKeyboardButton(text=f"{notify_mark} Уведомления", callback_data=f"{CallbackData.ADMIN_TOGGLE_NOTIFY_PREFIX}{user_id}"))
     builder.row(InlineKeyboardButton(text=f"{review_mark} Модерация", callback_data=f"{CallbackData.ADMIN_TOGGLE_REVIEW_PREFIX}{user_id}"))
     builder.row(InlineKeyboardButton(text=f"{broadcast_mark} Рассылка по базе", callback_data=f"{CallbackData.ADMIN_TOGGLE_BROADCAST_PREFIX}{user_id}"))
-    builder.row(InlineKeyboardButton(text=f"{admin_mark} Админ-права", callback_data=f"{CallbackData.ADMIN_TOGGLE_ADMIN_PREFIX}{user_id}"))
+    if show_admin_toggle:
+        builder.row(InlineKeyboardButton(text=f"{admin_mark} Админ-права", callback_data=f"{CallbackData.ADMIN_TOGGLE_ADMIN_PREFIX}{user_id}"))
     builder.row(InlineKeyboardButton(text="🎯 Назначить специальности", callback_data=f"{CallbackData.ADMIN_ASSIGN_SPECS_PREFIX}{user_id}"))
     builder.row(InlineKeyboardButton(text="🧩 Назначить группы", callback_data=f"{CallbackData.ADMIN_ASSIGN_GROUPS_PREFIX}{user_id}"))
     builder.row(InlineKeyboardButton(text="🔙 К списку", callback_data="admin_back_list"))

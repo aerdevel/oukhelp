@@ -1,7 +1,6 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from core.callbacks import CallbackData
-from core.config import settings
 from core.resources.text_file.menus import BUTTONS
 from utils.i18n import tr
 
@@ -17,31 +16,21 @@ def get_docs_list_kb(lang: str, back_callback: str = CallbackData.LEVEL_UNI) -> 
 
 
 def get_docs_confirm_kb(lang: str, *, consent_given: bool = False) -> InlineKeyboardMarkup:
-    """Финальное подтверждение отправки пакета документов."""
-    consent_text = (
-        "✅ Согласие на ПД получено"
-        if consent_given and lang == "ru"
-        else "✅ Дербес дерекке келісім алынды"
-        if consent_given
-        else "☑️ Дать согласие на обработку ПД"
-        if lang == "ru"
-        else "☑️ Дербес деректерді өңдеуге келісім беру"
-    )
-    policy_url = settings.privacy_policy_url.strip()
-    policy_button = (
-        InlineKeyboardButton(
-            text="📄 Политика ПД" if lang == "ru" else "📄 Дерек саясаты",
-            url=policy_url,
+    """Финальное подтверждение: только согласие на обработку ПД (без внешней ссылки на политику)."""
+    if consent_given:
+        consent_text = (
+            "✅ Согласие на обработку ПД получено"
+            if lang == "ru"
+            else "✅ Дербес деректерді өңдеуге келісім алынды"
         )
-        if policy_url and "example.com" not in policy_url
-        else InlineKeyboardButton(
-            text="📄 Политика ПД (не настроена)" if lang == "ru" else "📄 Дерек саясаты (бапталмаған)",
-            callback_data=CallbackData.DOC_POLICY_INFO,
+    else:
+        consent_text = (
+            "☑️ Даю согласие на обработку персональных данных"
+            if lang == "ru"
+            else "☑️ Дербес деректерді өңдеуге келісім беремін"
         )
-    )
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [policy_button],
             [InlineKeyboardButton(text=consent_text, callback_data=CallbackData.DOC_CONSENT)],
             [
                 InlineKeyboardButton(
@@ -52,7 +41,7 @@ def get_docs_confirm_kb(lang: str, *, consent_given: bool = False) -> InlineKeyb
                     text=tr(lang, "🔙 Назад", "🔙 Артқа"),
                     callback_data=CallbackData.DOC_BACK_FROM_CONFIRM,
                 ),
-            ]
+            ],
         ]
     )
 
@@ -69,4 +58,3 @@ def get_docs_done_kb(lang: str, menu_callback: str = CallbackData.LEVEL_UNI) -> 
             ]
         ]
     )
-

@@ -1,88 +1,72 @@
-import json
-from pathlib import Path
+"""ACL и права сотрудников (PostgreSQL). Бизнес-правила здесь; SQL — в db.repositories."""
+
+from __future__ import annotations
+
 from typing import Any
 
 from core.config import settings
 from core.resources.text_file.catalog import SPECIALTIES_BY_TRACK, get_all_specialties as catalog_get_all_specialties
-from utils.file_utils import read_json, write_json
+from db.database import session_scope
+from db import repositories as repo
+from db.serialization import access_profile_to_dict
+from db.models import AccessProfile
 
-
-STORE_PATH = Path("data/access_control.json")
 ALL_GROUPS = "*"
 
 
-def _default_payload() -> dict[str, Any]:
-    # Базовые права: только админ и приемная комиссия.
-    users = {
-        str(int(settings.admin_id)): {
-            "can_notify": True,
-            "can_review": True,
-            "can_broadcast": True,
-            "faculties": [ALL_GROUPS],
-            "groups": [ALL_GROUPS],
-            "specialties": [ALL_GROUPS],
-            "is_admin": True,
-        },
-        str(int(settings.priemka_id)): {
-            "can_notify": True,
-            "can_review": True,
-            "can_broadcast": False,
-            "faculties": [ALL_GROUPS],
-            "groups": [ALL_GROUPS],
-            "specialties": [ALL_GROUPS],
-            "is_admin": False,
-        },
-    }
-    return {"users": users}
+def is_primary_admin(user_id: int) -> bool:
+    return int(user_id) == int(settings.admin_id)
 
 
-def _ensure_store() -> None:
-    STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if not STORE_PATH.exists():
-        STORE_PATH.write_text(json.dumps(_default_payload(), ensure_ascii=False, indent=2), encoding="utf-8")
+async def _seed_defaults_if_empty(session) -> None:
+    from sqlalchemy import func, select
+
+    count = await session.scalar(select(func.count()).select_from(AccessProfile))
+    if count and count > 0:
+        return
+    session.add(
+        AccessProfile(
+            user_id=int(settings.admin_id),
+            can_notify=True,
+            can_review=True,
+            can_broadcast=True,
+            is_admin=True,
+            faculties=[ALL_GROUPS],
+            groups=[ALL_GROUPS],
+            specialties=[ALL_GROUPS],
+        )
+    )
+    session.add(
+        AccessProfile(
+            user_id=int(settings.priemka_id),
+            can_notify=True,
+            can_review=True,
+            can_broadcast=False,
+            is_admin=False,
+            faculties=[ALL_GROUPS],
+            groups=[ALL_GROUPS],
+            specialties=[ALL_GROUPS],
+        )
+    )
 
 
-def _read_store() -> dict[str, Any]:
-    _ensure_store()
-    data = read_json(STORE_PATH, _default_payload())
-    data.setdefault("users", {})
-    # Мягкая миграция старого формата без specialties.
-    for profile in data["users"].values():
-        profile.setdefault("can_notify", False)
-        profile.setdefault("can_review", False)
-        profile.setdefault("can_broadcast", False)
-        profile.setdefault("faculties", [])
-        profile.setdefault("groups", [])
-        profile.setdefault("specialties", list(profile.get("groups", [])))
-        profile.setdefault("is_admin", False)
-    return data
-
-
-def _write_store(data: dict[str, Any]) -> None:
-    _ensure_store()
-    write_json(STORE_PATH, data)
-
-
-def is_admin(user_id: int) -> bool:
+async def is_admin(user_id: int) -> bool:
     if int(user_id) == int(settings.admin_id):
         return True
-    data = _read_store()
-    profile = data["users"].get(str(user_id), {})
-    return bool(profile.get("is_admin", False))
+    async with session_scope() as session:
+        await _seed_defaults_if_empty(session)
+        row = await repo.access_get(session, user_id)
+        return bool(row and row.is_admin)
 
 
-def ensure_user(user_id: int) -> dict[str, Any]:
-    data = _read_store()
-    users = data["users"]
-    profile = users.get(str(user_id))
-    if profile is None:
-        profile = {"can_notify": False, "can_review": False, "can_broadcast": False, "faculties": [], "groups": [], "specialties": [], "is_admin": False}
-        users[str(user_id)] = profile
-        _write_store(data)
-    return profile
+async def ensure_user(user_id: int) -> dict[str, Any]:
+    async with session_scope() as session:
+        await _seed_defaults_if_empty(session)
+        row = await repo.access_ensure(session, user_id)
+        return access_profile_to_dict(row)
 
 
-def set_user_permissions(
+async def set_user_permissions(
     actor_id: int,
     target_user_id: int,
     *,
@@ -94,36 +78,32 @@ def set_user_permissions(
     faculties: list[str] | None = None,
     is_admin_flag: bool | None = None,
 ) -> None:
-    if not is_admin(actor_id):
+    if not await is_admin(actor_id):
         raise PermissionError("Недостаточно прав для изменения доступов.")
-    data = _read_store()
-    profile = data["users"].get(
-        str(target_user_id),
-        {"can_notify": False, "can_review": False, "can_broadcast": False, "faculties": [], "groups": [], "specialties": [], "is_admin": False},
-    )
-    if can_notify is not None:
-        profile["can_notify"] = bool(can_notify)
-    if can_review is not None:
-        profile["can_review"] = bool(can_review)
-    if can_broadcast is not None:
-        profile["can_broadcast"] = bool(can_broadcast)
-    if groups is not None:
-        normalized = [grp.strip() for grp in groups if grp.strip()]
-        profile["groups"] = normalized
-    if specialties is not None:
-        normalized = [spec.strip() for spec in specialties if spec.strip()]
-        profile["specialties"] = normalized
-    if faculties is not None:
-        normalized = [fac.strip() for fac in faculties if fac.strip()]
-        profile["faculties"] = normalized
-    if is_admin_flag is not None:
-        profile["is_admin"] = bool(is_admin_flag)
-    data["users"][str(target_user_id)] = profile
-    _write_store(data)
+    if is_admin_flag is not None and not is_primary_admin(actor_id):
+        raise PermissionError("Только главный администратор может назначать других админов.")
+    if is_admin_flag is False and is_primary_admin(target_user_id):
+        raise PermissionError("Нельзя снять права главного администратора.")
+    async with session_scope() as session:
+        row = await repo.access_ensure(session, target_user_id)
+        if can_notify is not None:
+            row.can_notify = bool(can_notify)
+        if can_review is not None:
+            row.can_review = bool(can_review)
+        if can_broadcast is not None:
+            row.can_broadcast = bool(can_broadcast)
+        if groups is not None:
+            row.groups = [g.strip() for g in groups if g.strip()]
+        if specialties is not None:
+            row.specialties = [s.strip() for s in specialties if s.strip()]
+        if faculties is not None:
+            row.faculties = [f.strip() for f in faculties if f.strip()]
+        if is_admin_flag is not None:
+            row.is_admin = bool(is_admin_flag)
 
 
-def get_user_permissions(user_id: int) -> dict[str, Any]:
-    profile = ensure_user(user_id)
+async def get_user_permissions(user_id: int) -> dict[str, Any]:
+    profile = await ensure_user(user_id)
     return {
         "can_notify": bool(profile.get("can_notify")),
         "can_review": bool(profile.get("can_review")),
@@ -140,16 +120,14 @@ def _has_access(profile: dict[str, Any], key: str, value: str) -> bool:
     return ALL_GROUPS in values or value in values
 
 
-def can_use_targeted_broadcast(user_id: int) -> bool:
-    """Рассылка по фильтрам: админ или уполномоченный флагом can_broadcast."""
-    return bool(is_admin(user_id) or get_user_permissions(user_id).get("can_broadcast"))
+async def can_use_targeted_broadcast(user_id: int) -> bool:
+    return bool(await is_admin(user_id) or (await get_user_permissions(user_id)).get("can_broadcast"))
 
 
-def can_notify(user_id: int, group: str, specialty: str | None = None) -> bool:
-    profile = ensure_user(user_id)
+async def can_notify(user_id: int, group: str, specialty: str | None = None) -> bool:
+    profile = await ensure_user(user_id)
     if not profile.get("can_notify"):
         return False
-    # Новый контур: сначала фильтрация по специальности, затем fallback по группе.
     if specialty and _has_access(profile, "specialties", specialty):
         return True
     if specialty:
@@ -159,8 +137,8 @@ def can_notify(user_id: int, group: str, specialty: str | None = None) -> bool:
     return _has_access(profile, "groups", group)
 
 
-def can_review(user_id: int, group: str, specialty: str | None = None) -> bool:
-    profile = ensure_user(user_id)
+async def can_review(user_id: int, group: str, specialty: str | None = None) -> bool:
+    profile = await ensure_user(user_id)
     if not profile.get("can_review"):
         return False
     if specialty and _has_access(profile, "specialties", specialty):
@@ -172,34 +150,38 @@ def can_review(user_id: int, group: str, specialty: str | None = None) -> bool:
     return _has_access(profile, "groups", group)
 
 
-def get_notification_receivers(group: str, specialty: str | None = None) -> list[int]:
-    data = _read_store()
+async def get_notification_receivers(group: str, specialty: str | None = None) -> list[int]:
+    async with session_scope() as session:
+        await _seed_defaults_if_empty(session)
+        rows = await repo.access_list_all(session)
     receivers: list[int] = []
-    for raw_user_id, profile in data["users"].items():
+    for user_id, profile in rows:
         if not profile.get("can_notify"):
             continue
         if specialty and _has_access(profile, "specialties", specialty):
-            receivers.append(int(raw_user_id))
+            receivers.append(user_id)
             continue
         if specialty:
             faculty = faculty_by_specialty(specialty)
             if faculty and _has_access(profile, "faculties", faculty):
-                receivers.append(int(raw_user_id))
+                receivers.append(user_id)
                 continue
         if _has_access(profile, "groups", group):
-            receivers.append(int(raw_user_id))
+            receivers.append(user_id)
     if not receivers:
         receivers = [int(settings.admin_id)]
     return sorted(set(receivers))
 
 
-def list_managers() -> list[tuple[int, dict[str, Any]]]:
-    data = _read_store()
-    items: list[tuple[int, dict[str, Any]]] = []
-    for raw_user_id, profile in data["users"].items():
-        if profile.get("can_notify") or profile.get("can_review") or profile.get("is_admin"):
-            items.append((int(raw_user_id), profile))
-    return sorted(items, key=lambda row: row[0])
+async def list_managers() -> list[tuple[int, dict[str, Any]]]:
+    async with session_scope() as session:
+        await _seed_defaults_if_empty(session)
+        rows = await repo.access_list_all(session)
+    return [
+        (user_id, profile)
+        for user_id, profile in rows
+        if profile.get("can_notify") or profile.get("can_review") or profile.get("is_admin")
+    ]
 
 
 def get_all_specialties(lang: str = "ru", track: str | None = None) -> list[str]:

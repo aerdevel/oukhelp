@@ -7,6 +7,8 @@ class Form(StatesGroup):
     role = State()           # Роль влияет на обязательность полей курса/группы.
     specialty = State()      # Выбор специальности из справочника.
     group = State()          # Группа нужна для маршрутизации заявок по ответственным.
+    teaching_groups = State()  # Мульти-выбор групп (препод / работник / выпускник).
+    teaching_group_create = State()  # Создание новой группы в справочнике.
     course = State()         # Для студентов обязателен, для остальных заполняется маркером.
     address = State()        # Зарезервировано под расширение анкеты.
     confirm = State()        # Финальная проверка перед отправкой.
@@ -49,3 +51,11 @@ class StaffCabinetFlow(StatesGroup):
 
     reassign_enter_user_id = State()
     reassign_enter_group = State()
+
+
+class StaffWorkplaceFlow(StatesGroup):
+    """Рабочее место: уведомления, расписание, мероприятия."""
+
+    notify_waiting_text = State()
+    event_waiting_text = State()
+    schedule_waiting_photo = State()

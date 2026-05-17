@@ -1,5 +1,6 @@
 from typing import List
 from pathlib import Path
+from urllib.parse import quote_plus
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -16,18 +17,35 @@ class Settings(BaseSettings):
     psycholog_admin_id: int | None = None
     log_level: str = "INFO"
     registration_retention_days: int = Field(default=180, ge=1, le=3650)
+    # Устарело: отдельный сайт политики не используется; согласие — inline в боте.
     privacy_policy_url: str = ""
     bot_proxy_url: str = ""
     startup_max_retries: int = Field(default=10, ge=1, le=100)
     startup_retry_delay_seconds: int = Field(default=8, ge=1, le=300)
-    excel_path: str = "data/admissions_registry.xlsx"
-    fallback_excel_path: str = "data/admissions_registry_fallback.xlsx"
-    accounts_path: str = "data/accounts_registry.xlsx"
-    fallback_accounts_path: str = "data/accounts_registry_fallback.xlsx"
-    college_excel_path: str = "data/college_admissions_registry.xlsx"
-    fallback_college_excel_path: str = "data/college_admissions_registry_fallback.xlsx"
-    college_accounts_path: str = "data/college_accounts_registry.xlsx"
-    fallback_college_accounts_path: str = "data/college_accounts_registry_fallback.xlsx"
+    excel_path: str = "data/excel/admissions_registry.xlsx"
+    fallback_excel_path: str = "data/excel/admissions_registry_fallback.xlsx"
+    accounts_path: str = "data/excel/accounts_registry.xlsx"
+    fallback_accounts_path: str = "data/excel/accounts_registry_fallback.xlsx"
+    college_excel_path: str = "data/excel/college_admissions_registry.xlsx"
+    fallback_college_excel_path: str = "data/excel/college_admissions_registry_fallback.xlsx"
+    college_accounts_path: str = "data/excel/college_accounts_registry.xlsx"
+    fallback_college_accounts_path: str = "data/excel/college_accounts_registry_fallback.xlsx"
+    staff_registry_path: str = "data/excel/staff_registry.xlsx"
+    fallback_staff_registry_path: str = "data/excel/staff_registry_fallback.xlsx"
+    college_staff_registry_path: str = "data/excel/college_staff_registry.xlsx"
+    fallback_college_staff_registry_path: str = "data/excel/college_staff_registry_fallback.xlsx"
+    college_whatsapp_url: str = "https://wa.me/77028429302"
+    excel_sync_on_startup: bool = True
+
+    # PostgreSQL (основное хранилище состояния бота)
+    db_host: str = "localhost"
+    db_port: int = Field(default=5432, ge=1, le=65535)
+    db_user: str = "oukhelpbot"
+    db_pass: str = ""
+    db_name: str = "oukhelpbot"
+    db_echo: bool = False
+    db_pool_size: int = Field(default=5, ge=1, le=50)
+    db_max_overflow: int = Field(default=10, ge=0, le=50)
 
     @field_validator(
         "excel_path",
@@ -38,6 +56,10 @@ class Settings(BaseSettings):
         "fallback_college_excel_path",
         "college_accounts_path",
         "fallback_college_accounts_path",
+        "staff_registry_path",
+        "fallback_staff_registry_path",
+        "college_staff_registry_path",
+        "fallback_college_staff_registry_path",
         mode="before",
     )
     @classmethod
@@ -95,6 +117,34 @@ class Settings(BaseSettings):
     @property
     def fallback_college_accounts_registry_path(self) -> Path:
         return Path(self.fallback_college_accounts_path)
+
+    @property
+    def staff_registry_excel_path(self) -> Path:
+        return Path(self.staff_registry_path)
+
+    @property
+    def fallback_staff_registry_excel_path(self) -> Path:
+        return Path(self.fallback_staff_registry_path)
+
+    @property
+    def college_staff_registry_excel_path(self) -> Path:
+        return Path(self.college_staff_registry_path)
+
+    @property
+    def fallback_college_staff_registry_excel_path(self) -> Path:
+        return Path(self.fallback_college_staff_registry_path)
+
+    @property
+    def database_url_async(self) -> str:
+        """DSN для asyncpg (runtime бота)."""
+        password = quote_plus(self.db_pass)
+        return f"postgresql+asyncpg://{self.db_user}:{password}@{self.db_host}:{self.db_port}/{self.db_name}"
+
+    @property
+    def database_url_sync(self) -> str:
+        """DSN для Alembic и синхронных утилит."""
+        password = quote_plus(self.db_pass)
+        return f"postgresql+psycopg://{self.db_user}:{password}@{self.db_host}:{self.db_port}/{self.db_name}"
 
     model_config = SettingsConfigDict(
         env_file=".env",

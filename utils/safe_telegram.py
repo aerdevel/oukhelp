@@ -18,6 +18,39 @@ def _is_message_not_modified(exc: TelegramBadRequest) -> bool:
     return "message is not modified" in msg
 
 
+def _is_not_editable(exc: TelegramBadRequest) -> bool:
+    msg = (getattr(exc, "message", None) or str(exc) or "").lower()
+    return "there is no text in the message to edit" in msg or "message can't be edited" in msg
+
+
+async def edit_or_send_text(
+    message: types.Message,
+    text: str,
+    reply_markup: types.InlineKeyboardMarkup | types.ReplyKeyboardMarkup | None = None,
+    **kwargs: Any,
+) -> types.Message:
+    """Редактирует текст/caption или отправляет новое сообщение (после фото/медиа)."""
+    if message.text is not None:
+        try:
+            await message.edit_text(text, reply_markup=reply_markup, **kwargs)
+            return message
+        except TelegramBadRequest as exc:
+            if _is_message_not_modified(exc) or _is_not_editable(exc):
+                pass
+            else:
+                raise
+    elif message.caption is not None:
+        try:
+            await message.edit_caption(caption=text, reply_markup=reply_markup, **kwargs)
+            return message
+        except TelegramBadRequest as exc:
+            if _is_message_not_modified(exc) or _is_not_editable(exc):
+                pass
+            else:
+                raise
+    return await message.answer(text, reply_markup=reply_markup, **kwargs)
+
+
 async def safe_edit_message_text(
     message: types.Message,
     text: str,
@@ -27,6 +60,22 @@ async def safe_edit_message_text(
     """edit_text; False если контент не изменился (идемпотентный no-op)."""
     try:
         await message.edit_text(text, reply_markup=reply_markup, **kwargs)
+        return True
+    except TelegramBadRequest as exc:
+        if _is_message_not_modified(exc) or _is_not_editable(exc):
+            await message.answer(text, reply_markup=reply_markup, **kwargs)
+            return True
+        raise
+
+
+async def safe_edit_reply_markup(
+    message: types.Message,
+    reply_markup: types.InlineKeyboardMarkup | None = None,
+    **kwargs: Any,
+) -> bool:
+    """edit_reply_markup; False если разметка не изменилась."""
+    try:
+        await message.edit_reply_markup(reply_markup=reply_markup, **kwargs)
         return True
     except TelegramBadRequest as exc:
         if _is_message_not_modified(exc):

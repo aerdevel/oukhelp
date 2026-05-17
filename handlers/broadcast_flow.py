@@ -84,7 +84,7 @@ def _broadcast_filter_keyboard(lang: str) -> types.InlineKeyboardMarkup:
 async def admin_open_broadcast(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     lang = data.get("locale", "ru")
-    if not can_use_targeted_broadcast(callback.from_user.id):
+    if not await can_use_targeted_broadcast(callback.from_user.id):
         await callback.answer(tr(lang, "Нет доступа.", "Қолжетімділік жоқ."), show_alert=True)
         return
     await state.update_data(bc_mode="admin", bc_filter={})
@@ -102,7 +102,7 @@ async def admin_open_broadcast(callback: types.CallbackQuery, state: FSMContext)
 async def admin_broadcast_filter(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     lang = data.get("locale", "ru")
-    if not can_use_targeted_broadcast(callback.from_user.id):
+    if not await can_use_targeted_broadcast(callback.from_user.id):
         await callback.answer(tr(lang, "Нет доступа.", "Қолжетімділік жоқ."), show_alert=True)
         return
     if data.get("bc_mode") != "admin":
@@ -175,12 +175,12 @@ async def broadcast_abort(callback: types.CallbackQuery, state: FSMContext):
 async def staff_notify_start(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     lang = data.get("locale", "ru")
-    if not is_responsible_user(callback.from_user.id):
+    if not await is_responsible_user(callback.from_user.id):
         await callback.answer(tr(lang, "Нет доступа.", "Қолжетімділік жоқ."), show_alert=True)
         return
     await state.update_data(bc_mode="staff_review", bc_filter={})
     await state.set_state(BroadcastFlow.waiting_message)
-    n = len(recipients_for_reviewer(callback.from_user.id))
+    n = len(await recipients_for_reviewer(callback.from_user.id))
     await callback.message.answer(
         tr(
             lang,
@@ -201,11 +201,11 @@ async def broadcast_receive_body(message: types.Message, state: FSMContext):
     lang = data.get("locale", "ru")
     mode = data.get("bc_mode")
     if mode == "admin":
-        if not can_use_targeted_broadcast(message.from_user.id):
+        if not await can_use_targeted_broadcast(message.from_user.id):
             await state.set_state(None)
             return
     elif mode == "staff_review":
-        if not is_responsible_user(message.from_user.id):
+        if not await is_responsible_user(message.from_user.id):
             await state.set_state(None)
             return
     else:
@@ -220,7 +220,7 @@ async def broadcast_receive_body(message: types.Message, state: FSMContext):
     if mode == "admin":
         bf = data.get("bc_filter") or {}
         rows = filter_approved_users(
-            get_approved_all(),
+            await get_approved_all(),
             track=bf.get("track"),
             role=bf.get("role"),
             group=bf.get("group"),
@@ -229,7 +229,7 @@ async def broadcast_receive_body(message: types.Message, state: FSMContext):
         )
         targets = recipient_telegram_ids(rows)
     else:
-        targets = recipients_for_reviewer(message.from_user.id)
+        targets = await recipients_for_reviewer(message.from_user.id)
 
     if not targets:
         await message.answer(tr(lang, "Нет получателей по текущим условиям.", "Алушылар жоқ."))

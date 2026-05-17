@@ -1,44 +1,15 @@
-import json
 import secrets
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
 
 from aiogram import Bot
 
 from core.config import settings
+from services.support_storage import load_bundle, save_bundle
 from utils.datetime_utils import parse_iso_utc
-from utils.file_utils import read_json, write_json
 
-STORE_PATH = Path("data/support_tickets.json")
 USER_PING_HOURS = 24
 AUTO_CLOSE_HOURS = 48
-
-
-def _default_store() -> dict[str, Any]:
-    return {
-        "seq_ticket": 10000,
-        "user_aliases": {},
-        "tickets": {},
-        "message_links": {},
-        "blocked_actors": {},
-        "staff_registry": {},
-    }
-
-
-def _read_store() -> dict[str, Any]:
-    data = read_json(STORE_PATH, _default_store())
-    data.setdefault("seq_ticket", 10000)
-    data.setdefault("user_aliases", {})
-    data.setdefault("tickets", {})
-    data.setdefault("message_links", {})
-    data.setdefault("blocked_actors", {})
-    data.setdefault("staff_registry", {})
-    return data
-
-
-def _write_store(data: dict[str, Any]) -> None:
-    write_json(STORE_PATH, data)
 
 
 def _now_iso() -> str:
@@ -87,8 +58,8 @@ def _topic_chat_id(topic_code: str) -> int | None:
     return None
 
 
-def open_or_get_ticket(user_id: int, topic_code: str, anonymous: bool) -> dict[str, Any]:
-    data = _read_store()
+async def open_or_get_ticket(user_id: int, topic_code: str, anonymous: bool) -> dict[str, Any]:
+    data = await load_bundle()
     existed = _active_ticket_for_user(data, user_id, topic_code)
     if existed:
         return existed
@@ -116,12 +87,12 @@ def open_or_get_ticket(user_id: int, topic_code: str, anonymous: bool) -> dict[s
         "chat_messages": [],
     }
     data["tickets"][ticket_id] = ticket
-    _write_store(data)
+    await save_bundle(data)
     return ticket
 
 
-def get_ticket(ticket_id: str) -> dict[str, Any] | None:
-    data = _read_store()
+async def get_ticket(ticket_id: str) -> dict[str, Any] | None:
+    data = await load_bundle()
     direct = data["tickets"].get(str(ticket_id))
     if direct:
         return direct
@@ -139,17 +110,17 @@ def get_ticket(ticket_id: str) -> dict[str, Any] | None:
     return None
 
 
-def get_ticket_by_message_id(chat_message_id: int) -> dict[str, Any] | None:
+async def get_ticket_by_message_id(chat_message_id: int) -> dict[str, Any] | None:
     # Backward compatibility: old mapping by message_id only.
-    data = _read_store()
+    data = await load_bundle()
     ticket_id = data["message_links"].get(str(chat_message_id))
     if not ticket_id:
         return None
     return data["tickets"].get(str(ticket_id))
 
 
-def get_ticket_by_chat_message(chat_id: int, message_id: int) -> dict[str, Any] | None:
-    data = _read_store()
+async def get_ticket_by_chat_message(chat_id: int, message_id: int) -> dict[str, Any] | None:
+    data = await load_bundle()
     ticket_id = data["message_links"].get(f"{chat_id}:{message_id}")
     if not ticket_id:
         # fallback to old storage
@@ -159,8 +130,8 @@ def get_ticket_by_chat_message(chat_id: int, message_id: int) -> dict[str, Any] 
     return data["tickets"].get(str(ticket_id))
 
 
-def link_chat_message(ticket_id: str, chat_message_id: int, chat_id: int | None = None) -> None:
-    data = _read_store()
+async def link_chat_message(ticket_id: str, chat_message_id: int, chat_id: int | None = None) -> None:
+    data = await load_bundle()
     if chat_id is not None:
         data["message_links"][f"{chat_id}:{chat_message_id}"] = str(ticket_id)
     data["message_links"][str(chat_message_id)] = str(ticket_id)
@@ -170,23 +141,23 @@ def link_chat_message(ticket_id: str, chat_message_id: int, chat_id: int | None 
         marker = f"{chat_id}:{chat_message_id}"
         if marker not in {f"{row.get('chat_id')}:{row.get('message_id')}" for row in chat_rows}:
             chat_rows.append({"chat_id": int(chat_id), "message_id": int(chat_message_id)})
-    _write_store(data)
+    await save_bundle(data)
 
 
-def append_user_message(ticket_id: str, text: str) -> dict[str, Any] | None:
-    data = _read_store()
+async def append_user_message(ticket_id: str, text: str) -> dict[str, Any] | None:
+    data = await load_bundle()
     ticket = data["tickets"].get(str(ticket_id))
     if not ticket:
         return None
     ticket["messages"].append({"from": "user", "text": text, "at": _now_iso()})
     ticket["status"] = "waiting_psychologist"
     ticket["updated_at"] = _now_iso()
-    _write_store(data)
+    await save_bundle(data)
     return ticket
 
 
-def append_psychologist_message(ticket_id: str, psychologist_id: int, text: str) -> dict[str, Any] | None:
-    data = _read_store()
+async def append_psychologist_message(ticket_id: str, psychologist_id: int, text: str) -> dict[str, Any] | None:
+    data = await load_bundle()
     ticket = data["tickets"].get(str(ticket_id))
     if not ticket:
         return None
@@ -199,12 +170,12 @@ def append_psychologist_message(ticket_id: str, psychologist_id: int, text: str)
     ticket["next_user_ping_at"] = _hours_from_now_iso(USER_PING_HOURS)
     ticket["status"] = "waiting_user"
     ticket["updated_at"] = now_iso
-    _write_store(data)
+    await save_bundle(data)
     return ticket
 
 
-def close_ticket(ticket_id: str, closed_by_user: bool = True) -> dict[str, Any] | None:
-    data = _read_store()
+async def close_ticket(ticket_id: str, closed_by_user: bool = True) -> dict[str, Any] | None:
+    data = await load_bundle()
     ticket = data["tickets"].get(str(ticket_id))
     if not ticket:
         return None
@@ -213,7 +184,7 @@ def close_ticket(ticket_id: str, closed_by_user: bool = True) -> dict[str, Any] 
     ticket["closed_by_user"] = bool(closed_by_user)
     ticket["next_user_ping_at"] = None
     ticket["updated_at"] = _now_iso()
-    _write_store(data)
+    await save_bundle(data)
     return ticket
 
 
@@ -251,18 +222,18 @@ def format_staff_stats(ticket: dict[str, Any]) -> str:
     return ", ".join(rows)
 
 
-def register_staff_profile(staff_id: int, *, username: str | None = None, full_name: str | None = None) -> None:
-    data = _read_store()
+async def register_staff_profile(staff_id: int, *, username: str | None = None, full_name: str | None = None) -> None:
+    data = await load_bundle()
     registry = data.setdefault("staff_registry", {})
     registry[str(staff_id)] = {
         "username": (username or "").strip(),
         "full_name": (full_name or "").strip(),
     }
-    _write_store(data)
+    await save_bundle(data)
 
 
-def append_user_payload(ticket_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
-    data = _read_store()
+async def append_user_payload(ticket_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    data = await load_bundle()
     ticket = data["tickets"].get(str(ticket_id))
     if not ticket:
         return None
@@ -270,11 +241,11 @@ def append_user_payload(ticket_id: str, payload: dict[str, Any]) -> dict[str, An
     ticket["messages"].append(row)
     ticket["status"] = "waiting_psychologist"
     ticket["updated_at"] = _now_iso()
-    _write_store(data)
+    await save_bundle(data)
     return ticket
 
 
-def append_staff_payload(
+async def append_staff_payload(
     ticket_id: str,
     staff_id: int,
     payload: dict[str, Any],
@@ -282,7 +253,7 @@ def append_staff_payload(
     staff_username: str | None = None,
     staff_full_name: str | None = None,
 ) -> dict[str, Any] | None:
-    data = _read_store()
+    data = await load_bundle()
     ticket = data["tickets"].get(str(ticket_id))
     if not ticket:
         return None
@@ -302,31 +273,31 @@ def append_staff_payload(
     ticket["updated_at"] = _now_iso()
     registry = data.setdefault("staff_registry", {})
     registry[key] = profiles[key]
-    _write_store(data)
+    await save_bundle(data)
     return ticket
 
 
-def set_ticket_rating(ticket_id: str, rating: int) -> dict[str, Any] | None:
-    data = _read_store()
+async def set_ticket_rating(ticket_id: str, rating: int) -> dict[str, Any] | None:
+    data = await load_bundle()
     ticket = data["tickets"].get(str(ticket_id))
     if not ticket:
         return None
     ticket["rating"] = int(rating)
     ticket.setdefault("rating_comment", "")
     ticket["updated_at"] = _now_iso()
-    _write_store(data)
+    await save_bundle(data)
     return ticket
 
 
-def set_ticket_rating_comment(ticket_id: str, comment: str) -> dict[str, Any] | None:
-    data = _read_store()
+async def set_ticket_rating_comment(ticket_id: str, comment: str) -> dict[str, Any] | None:
+    data = await load_bundle()
     ticket = data["tickets"].get(str(ticket_id))
     if not ticket:
         return None
     ticket["rating_comment"] = str(comment).strip()
     ticket["quality_score"] = calculate_ticket_quality_score(ticket)
     ticket["updated_at"] = _now_iso()
-    _write_store(data)
+    await save_bundle(data)
     return ticket
 
 
@@ -359,8 +330,8 @@ def calculate_ticket_quality_score(ticket: dict[str, Any]) -> int:
     return int(score)
 
 
-def list_staff_registry() -> list[tuple[int, dict[str, str]]]:
-    data = _read_store()
+async def list_staff_registry() -> list[tuple[int, dict[str, str]]]:
+    data = await load_bundle()
     registry = data.get("staff_registry", {})
     items: list[tuple[int, dict[str, str]]] = []
     for raw_id, profile in registry.items():
@@ -370,8 +341,8 @@ def list_staff_registry() -> list[tuple[int, dict[str, str]]]:
     return sorted(items, key=lambda item: (item[1].get("full_name") or item[1].get("username") or f"id{item[0]}").lower())
 
 
-def assign_ticket(ticket_id: str, staff_id: int, assigned_by: int) -> dict[str, Any] | None:
-    data = _read_store()
+async def assign_ticket(ticket_id: str, staff_id: int, assigned_by: int) -> dict[str, Any] | None:
+    data = await load_bundle()
     key = str(ticket_id)
     ticket = data["tickets"].get(key)
     if not ticket:
@@ -394,14 +365,14 @@ def assign_ticket(ticket_id: str, staff_id: int, assigned_by: int) -> dict[str, 
     ticket["assigned_by"] = int(assigned_by)
     ticket["assigned_at"] = _now_iso()
     ticket["updated_at"] = _now_iso()
-    _write_store(data)
+    await save_bundle(data)
     return ticket
 
 
-def set_ticket_assignees(ticket_id: str, staff_ids: list[int], assigned_by: int) -> dict[str, Any] | None:
+async def set_ticket_assignees(ticket_id: str, staff_ids: list[int], assigned_by: int) -> dict[str, Any] | None:
     """Назначает тикет нескольким психологам (список ID)."""
-    data = _read_store()
-    ticket = get_ticket(str(ticket_id))
+    data = await load_bundle()
+    ticket = await get_ticket(str(ticket_id))
     if not ticket:
         return None
     key = str(ticket.get("ticket_id") or ticket_id)
@@ -414,13 +385,13 @@ def set_ticket_assignees(ticket_id: str, staff_ids: list[int], assigned_by: int)
     ticket["updated_at"] = _now_iso()
     # Сохраняем обратно по правильному ключу
     data["tickets"][key] = ticket
-    _write_store(data)
+    await save_bundle(data)
     return ticket
 
 
-def list_blocked_actors() -> list[dict[str, Any]]:
+async def list_blocked_actors() -> list[dict[str, Any]]:
     """Возвращает список заблокированных акторов для админ-UI."""
-    data = _read_store()
+    data = await load_bundle()
     rows: list[dict[str, Any]] = []
     for key, payload in (data.get("blocked_actors") or {}).items():
         until_raw = payload.get("until")
@@ -438,18 +409,18 @@ def list_blocked_actors() -> list[dict[str, Any]]:
     return rows
 
 
-def unblock_actor_by_key(actor_key: str, admin_id: int) -> bool:
+async def unblock_actor_by_key(actor_key: str, admin_id: int) -> bool:
     """Разблокировать по ключу вида anon:XXXXXX или user:YYYY."""
-    data = _read_store()
+    data = await load_bundle()
     key = str(actor_key or "")
     existed = key in (data.get("blocked_actors") or {})
     data.setdefault("blocked_actors", {}).pop(key, None)
-    _write_store(data)
+    await save_bundle(data)
     return existed
 
 
-def build_staff_performance(period: str = "all") -> list[dict[str, Any]]:
-    data = _read_store()
+async def build_staff_performance(period: str = "all") -> list[dict[str, Any]]:
+    data = await load_bundle()
     now = datetime.now(timezone.utc)
     thresholds = {
         "day": now - timedelta(days=1),
@@ -502,14 +473,14 @@ def build_staff_performance(period: str = "all") -> list[dict[str, Any]]:
     return sorted(rows, key=lambda row: (row["quality_points"], row["replies"]), reverse=True)
 
 
-def user_tickets(user_id: int) -> list[dict[str, Any]]:
-    data = _read_store()
+async def user_tickets(user_id: int) -> list[dict[str, Any]]:
+    data = await load_bundle()
     rows = [row for row in data["tickets"].values() if int(row.get("user_id", 0)) == int(user_id)]
     return sorted(rows, key=lambda row: str(row.get("updated_at", "")), reverse=True)
 
 
-def tickets_by_alias(alias: str) -> list[dict[str, Any]]:
-    data = _read_store()
+async def tickets_by_alias(alias: str) -> list[dict[str, Any]]:
+    data = await load_bundle()
     rows = [
         row
         for row in data["tickets"].values()
@@ -518,8 +489,8 @@ def tickets_by_alias(alias: str) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda row: str(row.get("updated_at", "")), reverse=True)
 
 
-def is_actor_blocked(user_id: int, topic_code: str, anonymous: bool) -> tuple[bool, str]:
-    data = _read_store()
+async def is_actor_blocked(user_id: int, topic_code: str, anonymous: bool) -> tuple[bool, str]:
+    data = await load_bundle()
     if anonymous:
         alias = _ensure_alias(data, user_id)
         key = f"anon:{alias}"
@@ -536,14 +507,14 @@ def is_actor_blocked(user_id: int, topic_code: str, anonymous: bool) -> tuple[bo
         return True, "навсегда"
     if until <= datetime.now(timezone.utc):
         data["blocked_actors"].pop(key, None)
-        _write_store(data)
+        await save_bundle(data)
         return False, ""
     return True, until.strftime("%Y-%m-%d %H:%M UTC")
 
 
-def block_actor_by_ticket(ticket_id: str, mode: str, admin_id: int) -> dict[str, Any] | None:
-    data = _read_store()
-    ticket = get_ticket(str(ticket_id))
+async def block_actor_by_ticket(ticket_id: str, mode: str, admin_id: int) -> dict[str, Any] | None:
+    data = await load_bundle()
+    ticket = await get_ticket(str(ticket_id))
     if not ticket:
         return None
     # Нормализуем ключ, чтобы корректно обновлять по актуальному ID
@@ -558,25 +529,25 @@ def block_actor_by_ticket(ticket_id: str, mode: str, admin_id: int) -> dict[str,
         "blocked_by": int(admin_id),
         "blocked_at": _now_iso(),
     }
-    _write_store(data)
+    await save_bundle(data)
     return ticket
 
 
-def unblock_actor_by_ticket(ticket_id: str, admin_id: int) -> dict[str, Any] | None:
-    data = _read_store()
-    ticket = get_ticket(str(ticket_id))
+async def unblock_actor_by_ticket(ticket_id: str, admin_id: int) -> dict[str, Any] | None:
+    data = await load_bundle()
+    ticket = await get_ticket(str(ticket_id))
     if not ticket:
         return None
     key = _actor_key(ticket)
     data.setdefault("blocked_actors", {}).pop(key, None)
-    _write_store(data)
+    await save_bundle(data)
     ticket["unblocked_by"] = int(admin_id)
     ticket["unblocked_at"] = _now_iso()
     return ticket
 
 
-def ticket_message_refs(ticket_id: str) -> list[dict[str, int]]:
-    ticket = get_ticket(ticket_id)
+async def ticket_message_refs(ticket_id: str) -> list[dict[str, int]]:
+    ticket = await get_ticket(ticket_id)
     if not ticket:
         return []
     rows = ticket.get("chat_messages", [])
@@ -589,8 +560,8 @@ def ticket_message_refs(ticket_id: str) -> list[dict[str, int]]:
     return cleaned
 
 
-def due_user_pings(limit: int = 50) -> list[dict[str, Any]]:
-    data = _read_store()
+async def due_user_pings(limit: int = 50) -> list[dict[str, Any]]:
+    data = await load_bundle()
     now = datetime.now(timezone.utc)
     due: list[dict[str, Any]] = []
     for ticket in data["tickets"].values():
@@ -607,19 +578,19 @@ def due_user_pings(limit: int = 50) -> list[dict[str, Any]]:
     return due
 
 
-def postpone_user_ping(ticket_id: str, hours: int = 24) -> None:
-    data = _read_store()
+async def postpone_user_ping(ticket_id: str, hours: int = 24) -> None:
+    data = await load_bundle()
     ticket = data["tickets"].get(str(ticket_id))
     if not ticket:
         return
     ticket["next_user_ping_at"] = _hours_from_now_iso(hours)
     ticket["updated_at"] = _now_iso()
-    _write_store(data)
+    await save_bundle(data)
 
 
 async def process_due_user_pings(bot: Bot) -> int:
     await process_due_auto_close(bot)
-    due = due_user_pings()
+    due = await due_user_pings()
     sent = 0
     for ticket in due:
         user_id = int(ticket["user_id"])
@@ -629,10 +600,10 @@ async def process_due_user_pings(bot: Bot) -> int:
                 user_id,
                 f"Напоминание по тикету #{ticket_id}: психолог уже ответил. Если вопрос решен, закройте тикет и поставьте оценку.",
             )
-            postpone_user_ping(ticket_id, USER_PING_HOURS)
+            await postpone_user_ping(ticket_id, USER_PING_HOURS)
             sent += 1
         except Exception:
-            postpone_user_ping(ticket_id, USER_PING_HOURS)
+            await postpone_user_ping(ticket_id, USER_PING_HOURS)
     return sent
 
 
@@ -641,7 +612,7 @@ async def process_due_auto_close(bot: Bot, hours: int = AUTO_CLOSE_HOURS, limit:
     Автоматически закрывает тикеты, если после ответа сотрудника
     пользователь не ответил в течение `hours`.
     """
-    data = _read_store()
+    data = await load_bundle()
     now = datetime.now(timezone.utc)
     closed = 0
     notification_flags_changed = False
@@ -665,7 +636,7 @@ async def process_due_auto_close(bot: Bot, hours: int = AUTO_CLOSE_HOURS, limit:
         if closed >= limit:
             break
     if closed:
-        _write_store(data)
+        await save_bundle(data)
 
     # Отправляем уведомления после сохранения.
     for ticket in list(data["tickets"].values()):
@@ -697,5 +668,5 @@ async def process_due_auto_close(bot: Bot, hours: int = AUTO_CLOSE_HOURS, limit:
         ticket["auto_close_notified"] = True
         notification_flags_changed = True
     if notification_flags_changed:
-        _write_store(data)
+        await save_bundle(data)
     return closed

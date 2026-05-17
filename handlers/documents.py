@@ -63,7 +63,7 @@ def _extract_file_info(message: types.Message) -> dict[str, str]:
 async def _build_docs_package(state: FSMContext, sender: types.User) -> dict:
     """Собирает единый пакет документов из FSM и Telegram-профиля."""
     data = await state.get_data()
-    approved_profile = get_approved_user(sender.id) or {}
+    approved_profile = await get_approved_user(sender.id) or {}
     return {
         "tg_user_id": sender.id,
         "tg_username": sender.username or "",
@@ -124,13 +124,10 @@ async def _ask_faculty_step(target: types.Message | types.CallbackQuery, lang: s
         await target.answer(text, reply_markup=kb)
 
 
-@router.callback_query(F.data == CallbackData.DOCS)
-async def show_docs_list(callback: types.CallbackQuery, state: FSMContext):
-    """Показывает чек-лист документов и переводит пользователя к загрузке."""
+async def _open_docs_list(callback: types.CallbackQuery, state: FSMContext, *, track: str) -> None:
     data = await state.get_data()
     lang = data.get("locale", "ru")
-    track = _track_from_state(data)
-    await state.update_data(admission_track=track)
+    await state.update_data(admission_track=track, current_choice="Колледж" if track == "college" else "Университет")
     await state.set_state(None)
     text = MESSAGES[lang]["docs_list_college"] if track == "college" else MESSAGES[lang]["docs_list"]
     back_callback = CallbackData.LEVEL_COLL if track == "college" else CallbackData.LEVEL_UNI
@@ -138,13 +135,31 @@ async def show_docs_list(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text(text, reply_markup=ikb.get_docs_list_kb(lang, back_callback=back_callback))
     await callback.answer()
 
+
+@router.callback_query(F.data == CallbackData.DOCS)
+async def show_docs_list(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    await _open_docs_list(callback, state, track=_track_from_state(data))
+
+
+@router.callback_query(F.data == CallbackData.DOCS_UNI)
+async def show_docs_list_uni(callback: types.CallbackQuery, state: FSMContext):
+    await _open_docs_list(callback, state, track="uni")
+
+
+@router.callback_query(F.data == CallbackData.DOCS_COLL)
+async def show_docs_list_college(callback: types.CallbackQuery, state: FSMContext):
+    await _open_docs_list(callback, state, track="college")
+
+
 @router.callback_query(F.data == CallbackData.START_UPLOAD)
 async def start_upload(callback: types.CallbackQuery, state: FSMContext):
     """Инициализирует пошаговый сценарий загрузки документов."""
     data = await state.get_data()
     lang = data.get("locale", "ru")
-    track = _track_from_state(data)
-    approved_profile = get_approved_user(callback.from_user.id) or {}
+    track = str(data.get("admission_track") or _track_from_state(data))
+    await state.update_data(admission_track=track)
+    approved_profile = await get_approved_user(callback.from_user.id) or {}
     fio = sanitize_text(str(data.get("fio") or approved_profile.get("fio", "")))
     phone = str(data.get("phone") or approved_profile.get("phone", "")).strip()
 
@@ -287,7 +302,7 @@ async def docs_collect_phone_common(message: types.Message, state: FSMContext):
             )
         )
         return
-    owner = find_phone_owner(normalized_phone)
+    owner = await find_phone_owner(normalized_phone)
     if owner and _safe_tg_id(owner.get("tg_user_id")) not in {0, _safe_tg_id(message.from_user.id)}:
         await message.answer(
             tr(
@@ -325,8 +340,17 @@ async def docs_collect_source(message: types.Message, state: FSMContext):
         await message.answer(
             tr(
                 lang,
-                "Источник сохранен. Теперь подтвердите отправку пакета в приемную комиссию.",
-                "Дереккөз сақталды. Енді қабылдау комиссиясына жіберуді растаңыз.",
+                "Источник сохранён.\n\n"
+                "Перед отправкой пакета необходимо дать согласие на обработку персональных данных "
+                "(кнопка ниже). Данные используются только для приёмной кампании и доступны "
+                "уполномоченным сотрудникам. Вы можете запросить свои данные или удаление "
+                "командой /my_data или /delete_me.\n\n"
+                "После согласия нажмите «Отправить».",
+                "Дереккөз сақталды.\n\n"
+                "Жібермес бұрын дербес деректерді өңдеуге келісім беру керек (төмендегі батырма). "
+                "Деректер тек қабылдау процесіне арналған. /my_data және /delete_me арқылы "
+                "деректерді сұрауға немесе жоюға болады.\n\n"
+                "Келісімнен кейін «Жіберу» басыңыз.",
             ),
             reply_markup=ikb.get_docs_confirm_kb(lang, consent_given=bool(data.get("documents_consent"))),
         )
@@ -552,27 +576,6 @@ async def confirm_pd_consent(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer("Согласие сохранено." if lang == "ru" else "Келісім сақталды.")
 
 
-@router.callback_query(F.data == CallbackData.DOC_POLICY_INFO)
-async def policy_not_configured(callback: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    lang = data.get("locale", "ru")
-    text = tr(
-        lang,
-        "Политика обработки ПД:\n"
-        "1) Мы собираем только данные, нужные для приемной кампании.\n"
-        "2) Данные доступны только уполномоченным сотрудникам.\n"
-        "3) Вы можете запросить выгрузку или удаление данных командами /my_data и /delete_me.\n"
-        "4) Для публикации официальной версии укажите PRIVACY_POLICY_URL в .env.",
-        "Дербес деректерді өңдеу саясаты:\n"
-        "1) Тек қабылдау процесіне қажет деректер жиналады.\n"
-        "2) Деректерге тек уәкілетті қызметкерлер қол жеткізеді.\n"
-        "3) /my_data және /delete_me арқылы деректерді алу/жою сұрауын бере аласыз.\n"
-        "4) Ресми нұсқаны жариялау үшін .env ішінде PRIVACY_POLICY_URL орнатыңыз.",
-    )
-    await callback.message.answer(text)
-    await callback.answer()
-
-
 @router.callback_query(F.data == CallbackData.DOC_BACK_FROM_CONFIRM)
 async def doc_back_from_confirm(callback: types.CallbackQuery, state: FSMContext):
     """Возврат с финального подтверждения к шагу источника без сброса загруженных файлов."""
@@ -651,8 +654,8 @@ async def finalize_documents(callback: types.CallbackQuery, state: FSMContext):
         return
     await persist_documents_locally(callback.bot, package)
     # Сохраняем пакет уже после обогащения local_path, чтобы пути не терялись при последующих апдейтах.
-    add_pending_package(package)
-    stored_pending = get_package_for_review(callback.from_user.id) or {}
+    await add_pending_package(package)
+    stored_pending = await get_package_for_review(callback.from_user.id) or {}
     package["submit_attempt"] = int(stored_pending.get("submit_attempt", 1) or 1)
     # Сразу фиксируем запись в реестре как pending, чтобы приемная видела ФИО/телефон до решения.
     package["review_status"] = "pending"
@@ -678,7 +681,7 @@ async def review_documents_package(callback: types.CallbackQuery):
     if callback.message.chat.id != REVIEW_CHAT_ID:
         await callback.answer("Действие доступно только в чате приемной комиссии.", show_alert=True)
         return
-    if not is_responsible_user(callback.from_user.id):
+    if not await is_responsible_user(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     payload = callback.data.replace(CallbackData.DOC_REVIEW_PREFIX, "")
@@ -688,7 +691,7 @@ async def review_documents_package(callback: types.CallbackQuery):
         return
     tg_user_id = int(tg_id_raw)
     if action == "approve":
-        package = mark_package_approved(tg_user_id, callback.from_user.id, callback.from_user.username)
+        package = await mark_package_approved(tg_user_id, callback.from_user.id, callback.from_user.username)
         if not package:
             await callback.answer("Пакет уже обработан.", show_alert=True)
             return
@@ -720,13 +723,13 @@ async def review_documents_package(callback: types.CallbackQuery):
             await callback.bot.send_message(tg_user_id, approved_text)
         except Exception as err:
             logging.warning("Не удалось уведомить пользователя %s об одобрении пакета: %s", tg_user_id, err)
-        append_audit_event(
+        await append_audit_event(
             "documents_approved",
             callback.from_user.id,
             {"tg_user_id": tg_user_id, "review_chat_id": callback.message.chat.id},
         )
     elif action == "deny":
-        package = mark_package_denied(tg_user_id, callback.from_user.id, callback.from_user.username)
+        package = await mark_package_denied(tg_user_id, callback.from_user.id, callback.from_user.username)
         if not package:
             await callback.answer("Пакет уже обработан.", show_alert=True)
             return
@@ -738,7 +741,7 @@ async def review_documents_package(callback: types.CallbackQuery):
             )
         except Exception as err:
             logging.warning("Не удалось уведомить пользователя %s об отклонении пакета: %s", tg_user_id, err)
-        append_audit_event(
+        await append_audit_event(
             "documents_denied",
             callback.from_user.id,
             {"tg_user_id": tg_user_id, "review_chat_id": callback.message.chat.id},
@@ -755,7 +758,7 @@ async def open_documents_menu(callback: types.CallbackQuery):
     if callback.message.chat.id != REVIEW_CHAT_ID:
         await callback.answer("Действие доступно только в чате приемной комиссии.", show_alert=True)
         return
-    if not is_responsible_user(callback.from_user.id):
+    if not await is_responsible_user(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
 
@@ -764,7 +767,7 @@ async def open_documents_menu(callback: types.CallbackQuery):
         await callback.answer("Некорректный идентификатор.", show_alert=True)
         return
     tg_user_id = int(tg_id_raw)
-    package = get_package_for_review(tg_user_id)
+    package = await get_package_for_review(tg_user_id)
     if not package:
         await callback.answer("Пакет не найден.", show_alert=True)
         return
@@ -785,7 +788,7 @@ async def open_review_document(callback: types.CallbackQuery):
     if callback.message.chat.id != REVIEW_CHAT_ID:
         await callback.answer("Действие доступно только в чате приемной комиссии.", show_alert=True)
         return
-    if not is_responsible_user(callback.from_user.id):
+    if not await is_responsible_user(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
 
@@ -796,7 +799,7 @@ async def open_review_document(callback: types.CallbackQuery):
         return
 
     tg_user_id = int(tg_id_raw)
-    package = get_package_for_review(tg_user_id)
+    package = await get_package_for_review(tg_user_id)
     if not package:
         await callback.answer("Пакет не найден.", show_alert=True)
         return

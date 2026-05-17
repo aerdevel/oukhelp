@@ -123,7 +123,7 @@ def get_uni_menu(lang: str, is_registered: bool = False, is_responsible: bool = 
     builder.row(InlineKeyboardButton(text=btns["about"], callback_data=CallbackData.ABOUT_UNI))
     builder.row(InlineKeyboardButton(text=btns["faculties"], callback_data=CallbackData.FACULTIES))
     builder.row(InlineKeyboardButton(text=btns["register"], callback_data=CallbackData.FILL_FORM))
-    builder.row(InlineKeyboardButton(text=btns["docs"], callback_data=CallbackData.DOCS))
+    builder.row(InlineKeyboardButton(text=btns["docs"], callback_data=CallbackData.DOCS_UNI))
     builder.row(InlineKeyboardButton(text=btns["location"], callback_data=CallbackData.LOCATION))
     builder.row(InlineKeyboardButton(text=btns["socials"], callback_data=CallbackData.SOCIALS))
     # Кнопки кабинета и модерации вынесены в нижнюю reply-клавиатуру.
@@ -138,7 +138,7 @@ def get_college_menu(lang: str) -> InlineKeyboardMarkup:
     builder.row(InlineKeyboardButton(text=btns["about_college"], callback_data=CallbackData.ABOUT_COLL))
     builder.row(InlineKeyboardButton(text=btns["faculties"], callback_data=CallbackData.FACULTIES))
     builder.row(InlineKeyboardButton(text=btns["register"], callback_data=CallbackData.FILL_FORM))
-    builder.row(InlineKeyboardButton(text=btns["docs"], callback_data=CallbackData.DOCS))
+    builder.row(InlineKeyboardButton(text=btns["docs"], callback_data=CallbackData.DOCS_COLL))
     builder.row(InlineKeyboardButton(text=btns["location"], callback_data=CallbackData.LOCATION))
     builder.row(InlineKeyboardButton(text=btns["socials"], callback_data=CallbackData.SOCIALS))
     builder.row(get_back_button(f"{CallbackData.LANG_PREFIX}{lang}", lang))
@@ -157,48 +157,29 @@ def get_about_college_kb(lang: str, back_callback: str = CallbackData.LEVEL_COLL
 def get_staff_cabinet_kb(
     lang: str,
     *,
-    show_review: bool,
     show_staff_scope_tools: bool = False,
-    show_targeted_broadcast: bool = False,
+    show_my_schedule: bool = False,
     back_callback: str,
 ) -> InlineKeyboardMarkup:
-    """Инлайн-действия личного кабинета для зарегистрированных сотрудников (модерация, рассылки, дорожная карта)."""
+    """Личный кабинет: рабочее место и (для студента/выпускника) своё расписание.
+
+    Модерация и админ-панель — только reply-кнопки внизу чата.
+    """
     builder = InlineKeyboardBuilder()
-    if show_review:
+    if show_my_schedule:
         builder.row(
             InlineKeyboardButton(
-                text=BUTTONS[lang]["review_regs"],
-                callback_data=CallbackData.REVIEW_REGISTRATIONS,
-            )
-        )
-    if show_targeted_broadcast:
-        builder.row(
-            InlineKeyboardButton(
-                text=tr(lang, "📣 Рассылка по базе (фильтры)", "📣 База бойынша хабарлама (сүзгілер)"),
-                callback_data=CallbackData.ADMIN_PANEL_BROADCAST,
+                text=tr(lang, "📅 Моё расписание", "📅 Менің кестем"),
+                callback_data=CallbackData.STUDENT_MY_SCHEDULE,
             )
         )
     if show_staff_scope_tools:
         builder.row(
             InlineKeyboardButton(
-                text=tr(lang, "✉️ Сообщение подопечным", "✉️ Тәлімгерлерге хабарлама"),
-                callback_data=CallbackData.STAFF_NOTIFY,
-            ),
-            InlineKeyboardButton(
-                text=tr(lang, "🔄 Сменить группу студенту", "🔄 Студенттің тобын өзгерту"),
-                callback_data=CallbackData.STAFF_REASSIGN_START,
-            ),
+                text=tr(lang, "🧰 Рабочее место", "🧰 Жұмыс орны"),
+                callback_data=CallbackData.CABINET_WORKPLACE,
+            )
         )
-    builder.row(
-        InlineKeyboardButton(
-            text=tr(
-                lang,
-                "Рабочее место: расписание и уведомления",
-                "Жұмыс орны: кесте және хабарламалар",
-            ),
-            callback_data=CallbackData.CABINET_WORKPLACE,
-        )
-    )
     builder.row(get_back_button(back_callback, lang))
     return builder.as_markup()
 
@@ -255,6 +236,83 @@ def get_group_select_kb(lang: str, groups: list[str]) -> InlineKeyboardMarkup:
         InlineKeyboardButton(
             text="✍️ Ввести вручную" if lang == "ru" else "✍️ Қолмен енгізу",
             callback_data=CallbackData.GROUP_MANUAL,
+        )
+    )
+    return builder.as_markup()
+
+
+def get_teaching_groups_kb(
+    lang: str,
+    groups: list[str],
+    selected: set[str],
+    *,
+    page: int = 0,
+    page_size: int = 12,
+) -> InlineKeyboardMarkup:
+    """Мульти-выбор групп при регистрации преподавателя / работника / выпускника."""
+    total_pages = max(1, ceil(len(groups) / page_size))
+    safe_page = max(0, min(page, total_pages - 1))
+    start = safe_page * page_size
+    chunk = groups[start : start + page_size]
+
+    builder = InlineKeyboardBuilder()
+    for idx, name in enumerate(chunk):
+        abs_idx = start + idx
+        mark = "✅ " if name in selected else ""
+        builder.row(
+            InlineKeyboardButton(
+                text=f"{mark}{name}",
+                callback_data=f"{CallbackData.REG_GRP_TOGGLE_PREFIX}{abs_idx}",
+            )
+        )
+    nav: list[InlineKeyboardButton] = []
+    if safe_page > 0:
+        nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"rgpage_{safe_page - 1}"))
+    if safe_page < total_pages - 1:
+        nav.append(InlineKeyboardButton(text="➡️", callback_data=f"rgpage_{safe_page + 1}"))
+    if nav:
+        builder.row(*nav)
+    builder.row(
+        InlineKeyboardButton(
+            text=tr(lang, "➕ Создать группу", "➕ Топ құру"),
+            callback_data=CallbackData.REG_GRP_CREATE,
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text=tr(lang, "📋 Все группы трека", "📋 Тректің барлық топтары"),
+            callback_data=CallbackData.REG_GRP_ALL_TRACK,
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text=tr(lang, "🏫 Вся специальность (без группы)", "🏫 Бүкіл мамандық"),
+            callback_data=CallbackData.REG_GRP_SPEC_WIDE,
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text=tr(lang, "✅ Готово", "✅ Дайын"),
+            callback_data=CallbackData.REG_GRP_DONE,
+        )
+    )
+    builder.row(get_back_button(CallbackData.REG_ASSIGN_BACK, lang))
+    return builder.as_markup()
+
+
+def get_teacher_assignments_continue_kb(lang: str) -> InlineKeyboardMarkup:
+    """После сохранения зоны ответственности преподавателя."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(
+            text=tr(lang, "➕ Ещё кафедра / специальность", "➕ Тағы кафедра / мамандық"),
+            callback_data=CallbackData.REG_ASSIGN_ADD_MORE,
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text=tr(lang, "✅ Завершить и к проверке", "✅ Аяқтау"),
+            callback_data=CallbackData.REG_ASSIGN_FINISH,
         )
     )
     return builder.as_markup()
@@ -323,6 +381,20 @@ def get_help_menu_kb(lang: str, back_callback: str = CallbackData.LEVEL_UNI, tra
             callback_data=back_callback,
         )
     )
+    return builder.as_markup()
+
+
+def get_college_whatsapp_kb(lang: str, back_callback: str = CallbackData.LEVEL_COLL) -> InlineKeyboardMarkup:
+    from core.config import settings
+
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(
+            text="💬 WhatsApp колледжа" if lang == "ru" else "💬 Колледж WhatsApp",
+            url=settings.college_whatsapp_url,
+        )
+    )
+    builder.row(get_back_button(back_callback, lang))
     return builder.as_markup()
 
 
