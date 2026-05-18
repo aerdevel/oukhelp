@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from core.config import settings
 from db.base import Base
+from db import models  # noqa: F401 — регистрация таблиц в metadata
 
 _engine = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
@@ -96,18 +97,17 @@ async def init_database() -> bool:
         _db_available = False
         raise RuntimeError(f"Ошибка подключения к PostgreSQL: {exc}") from exc
 
-    if settings.db_auto_create_tables:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        logging.info("PostgreSQL: create_all — только недостающие таблицы")
-    else:
-        parts = settings._database_parts
-        logging.info(
-            "PostgreSQL: OK (%s:%s/%s)",
-            parts.host,
-            parts.port,
-            parts.database,
-        )
+    # Только недостающие таблицы; существующие данные не трогаем.
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    parts = settings._database_parts
+    logging.info(
+        "PostgreSQL: OK (%s:%s/%s), схема актуализирована",
+        parts.host,
+        parts.port,
+        parts.database,
+    )
 
     _db_available = True
     return True
