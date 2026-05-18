@@ -21,7 +21,14 @@
 
 ### PostgreSQL (источник правды)
 
-`core.config.settings.database_url_async` → `db.database.init_database()`.
+Подключение:
+
+- **`DB_URL` / `DATABASE_URL`** — строка подключения к **уже существующей** БД (данные не сбрасываются).
+- Иначе **`DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASS`, `DB_NAME`**.
+
+При старте: проверка `SELECT 1`. По умолчанию **нет** `create_all` (`DB_AUTO_CREATE_TABLES=false`).  
+Добавление новых таблиц из репозитория: `alembic upgrade head` (инкрементально).  
+Legacy JSON импортируется только в пустую БД (`db/json_import.py`).
 
 | Таблица | Назначение |
 |---------|------------|
@@ -96,7 +103,8 @@
 
 - заявки (`review_back_callback` → `cabinet_workplace`);
 - уведомления, мероприятия, **расписание-фото** (`services/staff_schedule.py`), смена группы;
-- идемпотентные правки inline: `utils/safe_telegram.safe_edit_reply_markup`.
+- идемпотентные правки inline: `utils/safe_telegram` (`edit_or_send_text`, `safe_edit_reply_markup` — после фото нельзя `edit_text`);
+- просмотр расписания staff: кафедра → спец. → курс → группа (без массовой выдачи всех фото).
 
 **Преподаватель:** `teaching_assignments` в `registrations.extra` (JSON), сборка ACL при approve — `services/teaching_assignments.py`.
 
@@ -120,8 +128,15 @@
 2. Callback в `core/callbacks.py` → клавиатура → handler.
 3. Повторяемую логику — в `services/` или `utils/`, не копировать в handlers.
 
+## Деплой (Railway)
+
+1. В `DB_URL` — URL **вашей** PostgreSQL (существующие данные сохраняются).
+2. После обновления кода с новыми таблицами — при необходимости один раз `alembic upgrade head`.
+3. Volume на `data/` для Excel и `data/files/`.
+4. Секреты только в Variables, не в git.
+
 ## См. также
 
-- [README.md](README.md) — быстрый старт
+- [README.md](README.md) — быстрый старт и Railway
 - [docs/ПОЯСНЯЛКА_ДЛЯ_НОВИЧКОВ.md](docs/ПОЯСНЯЛКА_ДЛЯ_НОВИЧКОВ.md)
 - [docs/PRESENTATION_COLLEGE_TROIKA.md](docs/PRESENTATION_COLLEGE_TROIKA.md) — сценарий на троих

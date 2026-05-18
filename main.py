@@ -16,27 +16,40 @@ from utils.logger import setup_logger
 
 async def main() -> None:
     setup_logger()
-    logging.info("Бот запускается")
-    await init_database()
-    await import_legacy_json_if_needed()
+    if settings.db_url and str(settings.db_url).strip():
+        logging.info("Бот запускается (PostgreSQL: DB_URL/DATABASE_URL)")
+    else:
+        logging.info(
+            "Бот запускается (PostgreSQL: %s:%s/%s)",
+            settings.db_host,
+            settings.db_port,
+            settings.db_name,
+        )
+    db_ok = await init_database()
+    if db_ok:
+        await import_legacy_json_if_needed()
 
-    if settings.excel_sync_on_startup:
-        try:
-            excel_stats = await sync_all_excel_from_database()
-            logging.info(
-                "Excel sync on startup: %s registrations, %s document packages",
-                excel_stats.get("approved_registrations"),
-                excel_stats.get("approved_packages"),
-            )
-        except Exception as err:
-            logging.error("Excel sync on startup failed: %s", err)
+        if settings.excel_sync_on_startup:
+            try:
+                excel_stats = await sync_all_excel_from_database()
+                logging.info(
+                    "Excel sync on startup: %s registrations, %s document packages",
+                    excel_stats.get("approved_registrations"),
+                    excel_stats.get("approved_packages"),
+                )
+            except Exception as err:
+                logging.error("Excel sync on startup failed: %s", err)
 
-    cleanup_result = await cleanup_stale_pending_data(settings.registration_retention_days)
-    logging.info(
-        "Retention cleanup: registrations=%s, packages=%s",
-        cleanup_result["removed_pending_registrations"],
-        cleanup_result["removed_pending_packages"],
-    )
+        cleanup_result = await cleanup_stale_pending_data(settings.registration_retention_days)
+        logging.info(
+            "Retention cleanup: registrations=%s, packages=%s",
+            cleanup_result["removed_pending_registrations"],
+            cleanup_result["removed_pending_packages"],
+        )
+    else:
+        logging.warning(
+            "Старт без PostgreSQL: локальный запуск. Регистрация/кабинет/модерация требуют деплоя на Railway."
+        )
 
     bot = create_bot()
     dp = create_dispatcher()
