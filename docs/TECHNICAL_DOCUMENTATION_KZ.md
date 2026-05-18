@@ -138,8 +138,8 @@
 ## 5.2 Файл және Excel
 
 - `data/files/<tg_user_id>/...` — құжат көшірмелері.
-- `data/admissions_registry.xlsx` — қабылдау реестрі.
-- `data/accounts_registry.xlsx` — аккаунттар реестрі (1 қолданушы = 1 жол).
+- `data/excel/admissions_registry.xlsx` — қабылдау реестрі.
+- `data/excel/accounts_registry.xlsx` — аккаунттар реестрі (1 қолданушы = 1 жол).
 - `data/audit_log.jsonl` — әрекеттер журналы.
 
 Маңызды:
@@ -201,8 +201,7 @@
 
 Келесі форматтардың екеуі де қолдау табады:
 
-- `EXCEL_PATH=data/admissions_registry.xlsx`
-- `EXCEL_PATH=Path("data/admissions_registry.xlsx")`
+- `EXCEL_PATH=data/excel/admissions_registry.xlsx`
 
 Ұсыныс: қарапайым бірінші форматты пайдалану.
 
@@ -242,7 +241,7 @@
 
 - JSON: `data/*.json`
 - Құжаттар: `data/files/...`
-- Реестр: `data/admissions_registry.xlsx`
+- Реестр: `data/excel/admissions_registry.xlsx`
 
 Production ұсыныстары:
 

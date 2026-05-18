@@ -7,3 +7,6 @@ __pycache__/
 .env
 .env.example
 *.pyc
+
+# Excel только в data/excel/ (не в корне data/)
+data/*.xlsx

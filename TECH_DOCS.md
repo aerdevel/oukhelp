@@ -50,12 +50,14 @@ Legacy JSON импортируется только в пустую БД (`db/js
 
 | Файл (по умолчанию) | Содержимое |
 |---------------------|------------|
-| `data/admissions_registry.xlsx` | Абитуриенты универа |
-| `data/college_admissions_registry.xlsx` | Абитуриенты колледжа |
-| `data/accounts_registry.xlsx` | Аккаунты универа |
-| `data/college_accounts_registry.xlsx` | Аккаунты колледжа |
-| `data/staff_registry.xlsx` | Работники/препод универа (лист `Staff`) |
-| `data/college_staff_registry.xlsx` | Работники/препод колледжа |
+| `data/excel/admissions_registry.xlsx` | Абитуриенты универа |
+| `data/excel/college_admissions_registry.xlsx` | Абитуриенты колледжа |
+| `data/excel/accounts_registry.xlsx` | Аккаунты универа |
+| `data/excel/college_accounts_registry.xlsx` | Аккаунты колледжа |
+| `data/excel/staff_registry.xlsx` | Работники/препод универа (лист `Staff`) |
+| `data/excel/college_staff_registry.xlsx` | Работники/препод колледжа |
+
+Резервные копии при блокировке файла: `*_fallback.xlsx` в той же папке. Старые `.xlsx` в корне `data/` не используются.
 
 Правила (`services/excel_registry.py`):
 

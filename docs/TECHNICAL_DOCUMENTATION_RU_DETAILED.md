@@ -175,9 +175,9 @@
 
 ## 5.4 Excel-реестр
 
-- `data/admissions_registry.xlsx`
+- `data/excel/admissions_registry.xlsx`
 - используется как управленческий реестр/отчет.
-- `data/accounts_registry.xlsx`
+- `data/excel/accounts_registry.xlsx`
 - используется как отдельный реестр создания аккаунтов (1 пользователь = 1 строка).
 
 Важно:
@@ -263,8 +263,7 @@ ACL:
 
 Поддерживаются оба варианта:
 
-- `EXCEL_PATH=data/admissions_registry.xlsx`
-- `EXCEL_PATH=Path("data/admissions_registry.xlsx")`
+- `EXCEL_PATH=data/excel/admissions_registry.xlsx`
 
 Если во второй форме допущена ошибка форматирования, startup/запись в Excel может упасть.
 Рекомендуется использовать первый (простой) формат.
@@ -309,7 +308,7 @@ ACL:
 
 - JSON: `data/*.json`,
 - файлы: `data/files`,
-- реестр: `data/admissions_registry.xlsx`.
+- реестр: `data/excel/admissions_registry.xlsx`.
 
 Для продакшена обязательно:
 
