@@ -81,7 +81,8 @@ async def notify_responsible_new_registration(bot: Bot, user_data: dict):
                     f"🔗 Username: {mask_username(str(tg_username or ''))}\n"
                     f"📨 Не доставлено в чат: {target_chat_id}"
                 )
-                await bot.send_message(chat_id=settings.admin_id, text=safe_text)
+                for admin_id in settings.admin_list:
+                    await bot.send_message(chat_id=admin_id, text=safe_text)
             except Exception as fallback_err:
                 logging.exception("Ошибка резервного уведомления админу: %s", fallback_err)
 
@@ -168,15 +169,14 @@ async def send_documents_package_for_review(bot: Bot, package: dict):
     except Exception as err:
         logging.exception("Ошибка отправки пакета в чат модерации %s: %s", review_chat_id, err)
         try:
-            await bot.send_message(
-                settings.admin_id,
-                (
-                    "⚠️ Не удалось отправить пакет в чат модерации\n"
-                    f"🆔 Пользователь: {tg_user_id}\n"
-                    f"📞 Телефон: {mask_phone(str(package.get('phone', '')))}\n"
-                    f"🔗 Username: {mask_username(str(package.get('tg_username', '')))}\n"
-                    f"📨 Чат: {review_chat_id}"
-                ),
+            text = (
+                "⚠️ Не удалось отправить пакет в чат модерации\n"
+                f"🆔 Пользователь: {tg_user_id}\n"
+                f"📞 Телефон: {mask_phone(str(package.get('phone', '')))}\n"
+                f"🔗 Username: {mask_username(str(package.get('tg_username', '')))}\n"
+                f"📨 Чат: {review_chat_id}"
             )
+            for admin_id in settings.admin_list:
+                await bot.send_message(admin_id, text)
         except Exception as fallback_err:
             logging.exception("Ошибка резервного уведомления админу: %s", fallback_err)

@@ -24,18 +24,19 @@ async def _seed_defaults_if_empty(session) -> None:
     count = await session.scalar(select(func.count()).select_from(AccessProfile))
     if count and count > 0:
         return
-    session.add(
-        AccessProfile(
-            user_id=int(settings.admin_id),
-            can_notify=True,
-            can_review=True,
-            can_broadcast=True,
-            is_admin=True,
-            faculties=[ALL_GROUPS],
-            groups=[ALL_GROUPS],
-            specialties=[ALL_GROUPS],
+    for admin_user_id in settings.admin_list:
+        session.add(
+            AccessProfile(
+                user_id=int(admin_user_id),
+                can_notify=True,
+                can_review=True,
+                can_broadcast=True,
+                is_admin=True,
+                faculties=[ALL_GROUPS],
+                groups=[ALL_GROUPS],
+                specialties=[ALL_GROUPS],
+            )
         )
-    )
     session.add(
         AccessProfile(
             user_id=int(settings.priemka_id),
@@ -51,7 +52,7 @@ async def _seed_defaults_if_empty(session) -> None:
 
 
 async def is_admin(user_id: int) -> bool:
-    if int(user_id) == int(settings.admin_id):
+    if int(user_id) in {int(x) for x in settings.admin_list}:
         return True
     async with session_scope() as session:
         await _seed_defaults_if_empty(session)

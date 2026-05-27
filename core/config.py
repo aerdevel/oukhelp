@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     bot_token: str
 
     admin_id: int = Field(..., gt=0)
+    admin_ids: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("ADMIN_IDS", "ADMIN_ID_LIST"),
+        description="Доп. админы: '123,456,789' (через запятую/пробел).",
+    )
     review_chat_id: int | None = None
     priemka_id: int = Field(..., gt=0)
     psycholog_chat_id: int | None = None
@@ -113,7 +118,26 @@ class Settings(BaseSettings):
 
     @property
     def admin_list(self) -> List[int]:
-        return [self.admin_id]
+        raw = str(self.admin_ids or "").strip()
+        extra: list[int] = []
+        if raw:
+            for token in raw.replace(";", ",").replace(" ", ",").split(","):
+                token = token.strip()
+                if not token:
+                    continue
+                if token.isdigit():
+                    extra.append(int(token))
+        # Важно: admin_id всегда главный админ (для критичных операций), остальные — дополнительные.
+        out = [int(self.admin_id), *extra]
+        # dedupe, keep order
+        seen: set[int] = set()
+        uniq: list[int] = []
+        for uid in out:
+            if uid in seen:
+                continue
+            seen.add(uid)
+            uniq.append(uid)
+        return uniq
 
     @property
     def moderation_chat_id(self) -> int:
